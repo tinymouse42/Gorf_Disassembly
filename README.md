@@ -1,4 +1,4 @@
-# Gorf_Disassembly (coin-op arcade game)
+# Gorf Disassembly (coin-op arcade game)
 
 Disassembly of Gorf coin-op arcade game - version 2 ROMs
 
