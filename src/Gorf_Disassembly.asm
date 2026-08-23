@@ -65,6 +65,53 @@
 ;   gorf-h.bin  fe7b863d    5aa8d824814ee1c30eaf0044da78d3aa8220dcaa
 ;
 ;******************************************************************************************
+;
+;   Sound events and score streams.
+;   High-level event symbols point to compiled TERSE colon words.
+;   Score symbols point to bytecode consumed by the native music interpreter. 
+;   Several events submit two scores, one to each Astrocade music processor.
+;
+PLAYER_SHOT_SOUND         EQU     $2683   ; GORFOS 0186: 1D, primary BMUSIC
+PLAYER_EXPLOSION_SCORE    EQU     $268C   ; GORFOS 0186: 1GSCORE
+PLAYER_EXPLOSION_SOUND    EQU     $26F8   ; GORFOS 0186: 1G, primary then secondary
+PZSCORE                   EQU     $26B3   ; GORFOS 0187: PZIP score
+PZIP_SOUND                EQU     $270C   ; GORFOS 0187: PZ
+ZPSCORE                   EQU     $26CF   ; GORFOS 0187: ZPIP score
+ZPIP_SOUND                EQU     $2715   ; GORFOS 0187: ZP
+TO1SCORE                  EQU     $271E   ; GORFOS 0188: takeoff primary score
+TO2SCORE                  EQU     $2758   ; GORFOS 0188: takeoff secondary score
+TAKEOFF_SOUND             EQU     $2792   ; GORFOS 0188: TO composite event
+
+;   Mission 1: Astro Battles / Invaders.
+THUMPSCORE                EQU     $8115   ; INVADERS 0113: background thump score
+INVADER_THUMP_SOUND       EQU     $812E   ; INVADERS 0113: TH
+IASCORE                   EQU     $8139   ; INVADERS 0114: large-invader score
+LARGE_INVADER_SOUND       EQU     $8154   ; INVADERS 0114: IA
+
+;   Mission 4: Space Warp.
+SPSCORE                   EQU     $9F45   ; SPACE WARP 0110: ship-spiral score
+SHIP_SPIRAL_SOUND         EQU     $9F5A   ; SPACE WARP 0110: SP
+FBLSCORE                  EQU     $9F65   ; SPACE WARP 0110: fireblast score
+FIREBLAST_SOUND           EQU     $9F7C   ; SPACE WARP 0110: FBL
+ST1SCORE                  EQU     $9F87   ; SPACE WARP 0111: star-spiral primary score
+ST2SCORE                  EQU     $9FBC   ; SPACE WARP 0111: star-spiral secondary score
+STAR_SPIRAL_SOUND         EQU     $9FF1   ; SPACE WARP 0111: ST composite event
+
+;   Mission 5: Flag Ship.
+BSFSCORE                  EQU     $A9D7   ; FLAG SHIP 0111: background-ship score
+BACKGROUND_SHIP_SOUND     EQU     $AA1F   ; FLAG SHIP 0111: BSF
+SE1SCORE                  EQU     $AA28   ; FLAG SHIP 0112: ship-explosion primary score
+SE2SCORE                  EQU     $AA61   ; FLAG SHIP 0112: ship-explosion secondary score
+SHIP_EXPLOSION_SOUND      EQU     $AA6C   ; FLAG SHIP 0112: SE composite event
+FBSCORE                   EQU     $AA7B   ; FLAG SHIP 0113: fireball score
+FIREBALL_SOUND            EQU     $AA9F   ; FLAG SHIP 0113: FBS
+SOSCORE                   EQU     $AAAA   ; FLAG SHIP 0113: ship-shotoff score
+SHIP_SHOTOFF_SOUND        EQU     $AAD3   ; FLAG SHIP 0113: SO
+BH1SCORE                  EQU     $AADE   ; FLAG SHIP 0114: black-hole primary score
+BH2SCORE                  EQU     $AB2F   ; FLAG SHIP 0114: black-hole secondary score
+BLACK_HOLE_SOUND          EQU     $AB80   ; FLAG SHIP 0114: BH composite event
+;
+;******************************************************************************************
 ;   COLD START of the game. This section just jumps over the RST $08
 ;   which hold _ENTER for the Terse engine.
 ;******************************************************************************************
@@ -8434,11 +8481,12 @@ playkbs:    ld      hl,KBSCORE
             and     a
             ret     nz
             call    $2A7F
-SCORE_2669  EQU     $2669               ; Program-2 score entry
+PLAYER_SHOT_SCORE EQU $2669             ; GORFOS 0186: player-fire score (1DSCORE)
 
-            ; Start SCORE_2669 on processor 1. bmusic preserves an active priority
-            ; score, so this event cannot interrupt a priority effect.
-            ld      hl,SCORE_2669
+; ----> play_player_shot_sound  Gameplay launcher for the player-fire score.
+;                               BMUSIC preserves an active priority score on processor 1.
+play_player_shot_sound:
+            ld      hl,PLAYER_SHOT_SCORE
             ld      iy,$D0B1
             jp      bmusic
             ld      bc,$0E15
@@ -15100,11 +15148,13 @@ LASER_ATTACK_BUG_SHIP_COMPACT:
             ld      d,$00
             push    de
             call    $900C
-SCORE_8BA0  EQU     $8BA0               ; Program-2 score entry
+LZSCORE     EQU     $8BA0               ; ATTACK FIGHTER 0102: laser score
 
-            ; This mission state transition preempts processor 2 with SCORE_8BA0.
-            ; pmusic clears the selected processor before installing the score.
-            ld      hl,SCORE_8BA0
+; ----> play_attack_fighter_laser_sound
+;       FCHECK reaches this branch after saving mission state on the native stack. PMUSIC
+;       clears processor 2 and priority-starts LZSCORE; callers must preserve that context.
+play_attack_fighter_laser_sound:
+            ld      hl,LZSCORE
             ld      iy,$D0E1
             call    pmusic
             pop     de
@@ -16322,11 +16372,12 @@ GALAXIANS_SHIELD_SHIP_4:
             rst     $38
             inc     b
             inc     bc
-SCORE_9786  EQU     $9786               ; Galaxians-module score entry
+GASCORE     EQU     $9786               ; GALAXIANS 0157: attack score
 
-            ; Start SCORE_9786 on processor 2. bmusic leaves an active priority score
-            ; undisturbed.
-            ld      hl,SCORE_9786
+; ----> play_galaxian_attack_sound  Self-contained GA sound launcher.
+;                                    BMUSIC preserves a priority score on processor 2.
+play_galaxian_attack_sound:
+            ld      hl,GASCORE
             ld      iy,$D0E1
             jp      bmusic
             di

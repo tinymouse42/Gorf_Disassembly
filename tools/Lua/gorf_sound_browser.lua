@@ -1,11 +1,12 @@
 -- gorf_sound_browser.lua
--- Gorf Program 2 native ROM sound browser for MAME 0.289+
+-- Gorf Program 2 native ROM sound-event browser for MAME 0.289+
 --
 -- Gorf boots normally, then the browser takes over the foreground with a small
 -- Z80 loop in work RAM and a native Gorf drawchar UI.  Sound playback does not
 -- use captured register streams, JSON libraries, WebAudio, or synthesized
--- approximations.  Every catalog entry is an embedded Program-2 music score
--- executed by Gorf's own ROM music interpreter.
+-- approximations.  Every catalog entry invokes a Program-2 TERSE word, an exact
+-- game sound routine, or the same native music-engine submission used by game
+-- code. Composite TERSE events retain their original two-processor sequencing.
 --
 -- While the browser owns the foreground, its HALT loop calls Gorf's native
 -- busaround routine once after every interrupt.  This is required because the
@@ -17,26 +18,27 @@
 -- music-processor work arrays for status, and optionally asks MAME to record WAV.
 --
 -- Controls:
---   LEFT / RIGHT  cycle ALL / PRIMARY / SECONDARY
---   UP / DOWN     move selection
---   FIRE          play selected ROM score
+--   UP / DOWN     move selection through the complete catalog
+--   FIRE          play/stop the selected sound event
 --   1P START      exit MAME
 --   2P START      play all / stop after current score
 --
 -- Console:
 --   gswav() / gswav(true|false)  toggle/set per-score WAV capture
---   gsall()                       play all scores in current filter
+--   gsall()                       play the complete catalog
 --   gsstop()                      stop current score/play-all
---   gsplay(n)                     play visible score n
---   gslist()                      list visible ROM score catalog
+--   gsselect(n)                   select catalog item n
+--   gsplay(n)                     play catalog item n
+--   gslist()                      list the complete ROM event catalog
 --   gsinfo()                      show selected score details
 --   gsaudit()                     dump selected score and music-engine state
 --   gsstate()                     dump native Gorf music-processor state
+--   gstrace() / gstrace(true|false) toggle/set score-transition logging
 --   gsdiag()                      dump fixed Gorf music-engine anchors
 --   gsexit()                      exit MAME
 --   gshelp()                      show commands
 
-local VERSION = "0.4.1-20260814-1851"
+local VERSION = "0.5.2-20260823-0816"
 local BUILD_FILE = "gorf_sound_browser.lua"
 
 local C = {
@@ -54,17 +56,23 @@ local C = {
   SECONDARY_MUSIC = 0xD0E1,
   ENDMUS = 0x0B85,
   EMUSIC = 0x0B86,
+  WRITE = 0x062E,
+  RELABS = 0xD080,
   BUSAROUND = 0x0F7E,
   BMUSIC = 0x0FAC,
   PMUSIC = 0x0FC2,
   MMUSIC = 0x0FDB,
   MPMUSIC = 0x0FF0,
+  DSPATCH = 0x005A,
 
   -- Browser work RAM. Matches the proven speech-browser layout.
   IDLE_LOOP = 0xD400,
   DRAW_CODE = 0xD420,
   PLAY_CODE = 0xD700,
-  DRAW_DATA = 0xD520,
+  DRAW_DATA = 0xD560,
+  TERSE_THREAD = 0xD6C0,
+  TERSE_EXIT = 0xD6D0,
+  TERSE_RETURN_STACK = 0xD6F0,
   CALL_STACK = 0xD7E0,
 
   TAKEOVER_DELAY_SEC = 12.0,
@@ -74,9 +82,10 @@ local C = {
   UI_WIDTH = 27,
   WAV_POSTROLL_SEC = 0.15,
 
-  -- Native completion/loop detection.  Finite scores end when Gorf's own
-  -- music PC reaches ENDMUS.  For play-all only, a repeated non-consecutive
-  -- native MUSPC marks a real score control-flow loop and ends that audition.
+  -- Native completion/loop detection. Finite scores normally end when Gorf's
+  -- music PC reaches ENDMUS. Two ROM streams have documented stationary
+  -- endpoints and are classified explicitly in their component declarations.
+  -- A repeated non-consecutive MUSPC marks a score control-flow loop.
   LOOP_MIN_TRANSITIONS = 2,
 
   ATTR_BLUE = 0x0808,
@@ -91,17 +100,83 @@ local IDLE_LOOP_BYTES = {
   0xC3, 0x01, 0xD4,             -- $D405 JP $D401
 }
 
--- Currently established Program-2 score launch points proven by Gorf call sites.
--- These six entries are a seed catalog, not a claim that Gorf has only six
--- audible sound effects.  The full sound audit must also account for indirect
--- starts, parameterized starts, and distinct score paths/entry points.
+-- Complete Program-2 sound-event catalog.  "terse" routes dispatch the original
+-- compiled colon word through DSPATCH. "routine" routes call a self-contained
+-- native game launcher. "score" is reserved for gameplay paths whose containing
+-- routine requires live mission state; it reproduces that call site's exact
+-- processor and bmusic/pmusic submission without entering unsafe mission logic.
+-- Components document every distinct ROM score used by an event and drive the
+-- two-processor completion monitor.
 local ROM_CATALOG = {
-  { id="GORF_S_1354", name="SCORE 1354",          chip="secondary", mode="native", address=0x1354, trigger="bmusic", source="W_136D -> _B2MUSIC" },
-  { id="GORF_P_136A", name="ATTRACT JOYSTICK FX", chip="primary",   mode="native", address=0x136A, trigger="pmusic", source="AM_TALK -> AM_FX -> pmusic" },
-  { id="GORF_P_2669", name="SCORE 2669",          chip="primary",   mode="native", address=0x2669, trigger="bmusic", source="direct Program-2 caller -> bmusic" },
-  { id="GORF_S_27A1", name="SCORE 27A1",          chip="secondary", mode="native", address=0x27A1, trigger="bmusic", source="direct Program-2 caller -> bmusic" },
-  { id="GORF_S_8BA0", name="SCORE 8BA0",          chip="secondary", mode="native", address=0x8BA0, trigger="pmusic", source="direct Program-2 caller -> pmusic" },
-  { id="GORF_S_9786", name="SCORE 9786",          chip="secondary", mode="native", address=0x9786, trigger="bmusic", source="direct Program-2 caller -> bmusic" },
+  { id="CNSD", name="COIN INSERT", chip="secondary",
+    route={kind="terse", word=0x136D}, components={{chip="secondary",score=0x1354,trigger="b2music"}},
+    source="GORFOS 0109 CNSD" },
+  { id="GOYAK_FX", name="ATTRACT JOYSTICK FX", chip="primary",
+    route={kind="score", score=0x136A, chip="primary", trigger="pmusic"},
+    components={{chip="primary",score=0x136A,trigger="pmusic"}}, source="goyak synchronized attract effect" },
+  { id="PLAYER_SHOT", name="PLAYER SHOT", chip="primary",
+    route={kind="routine", routine=0x2AEF}, components={{chip="primary",score=0x2669,trigger="bmusic"}},
+    source="player fire native launcher" },
+  { id="PLAYER_EXPLOSION", name="PLAYER SHIP EXPLOSION", chip="both",
+    route={kind="terse", word=0x26F8},
+    components={{chip="primary",score=0x268C,trigger="pmusic"},{chip="secondary",score=0x268C,trigger="p2music"}},
+    source="GORFOS 0186 1G" },
+  { id="PZIP", name="PZIP", chip="primary",
+    route={kind="terse", word=0x270C}, components={{chip="primary",score=0x26B3,trigger="bmusic"}},
+    source="GORFOS 0187 PZ" },
+  { id="ZPIP", name="ZPIP", chip="primary",
+    route={kind="terse", word=0x2715}, components={{chip="primary",score=0x26CF,trigger="bmusic"}},
+    source="GORFOS 0187 ZP" },
+  { id="TAKEOFF", name="TAKEOFF", chip="both",
+    route={kind="terse", word=0x2792},
+    components={{chip="secondary",score=0x2758,trigger="p2music"},{chip="primary",score=0x271E,trigger="pmusic"}},
+    source="GORFOS 0188 TO" },
+  { id="DIVE", name="DIVE", chip="secondary",
+    route={kind="routine", routine=0x27D1}, components={{chip="secondary",score=0x27A1,trigger="bmusic"}},
+    source="GORFOS 0189 PLAYKBS" },
+  { id="INVADER_THUMP", name="INVADER THUMP", chip="secondary",
+    route={kind="terse", word=0x812E},
+    components={{chip="secondary",score=0x8115,trigger="p2music",
+      endpoint={kind="terminal",pc=0x812F}}},
+    source="INVADERS 0113 TH" },
+  { id="LARGE_INVADER", name="LARGE INVADER", chip="secondary",
+    route={kind="terse", word=0x8154}, components={{chip="secondary",score=0x8139,trigger="p2music"}},
+    source="INVADERS 0114 IA" },
+  { id="LASER_SHOT", name="LASER SHOT", chip="secondary",
+    route={kind="score", score=0x8BA0, chip="secondary", trigger="pmusic"},
+    components={{chip="secondary",score=0x8BA0,trigger="pmusic"}}, source="Attack Fighter FCHECK sound branch" },
+  { id="GALAXIAN_ATTACK", name="GALAXIAN ATTACK", chip="secondary",
+    route={kind="routine", routine=0x97BE},
+    components={{chip="secondary",score=0x9786,trigger="bmusic",
+      endpoint={kind="continuous",pc=0x97BE}}},
+    source="Galaxians GA native launcher" },
+  { id="SHIP_SPIRAL", name="SHIP SPIRAL", chip="secondary",
+    route={kind="terse", word=0x9F5A}, components={{chip="secondary",score=0x9F45,trigger="b2music"}},
+    source="SPACE WARP 0110 SP" },
+  { id="FIREBLAST", name="FIREBLAST", chip="secondary",
+    route={kind="terse", word=0x9F7C}, components={{chip="secondary",score=0x9F65,trigger="b2music"}},
+    source="SPACE WARP 0110 FBL" },
+  { id="STAR_SPIRAL", name="STAR SPIRAL", chip="both",
+    route={kind="terse", word=0x9FF1},
+    components={{chip="primary",score=0x9F87,trigger="pmusic"},{chip="secondary",score=0x9FBC,trigger="p2music"}},
+    source="SPACE WARP 0111 ST" },
+  { id="BACKGROUND_SHIP", name="BACKGROUND SHIP", chip="secondary",
+    route={kind="terse", word=0xAA1F}, components={{chip="secondary",score=0xA9D7,trigger="b2music"}},
+    source="FLAG SHIP 0111 BSF" },
+  { id="SHIP_EXPLOSION", name="SHIP EXPLOSION", chip="both",
+    route={kind="terse", word=0xAA6C},
+    components={{chip="secondary",score=0xAA61,trigger="p2music"},{chip="primary",score=0xAA28,trigger="pmusic"}},
+    source="FLAG SHIP 0112 SE" },
+  { id="FIREBALL", name="FIREBALL", chip="secondary",
+    route={kind="terse", word=0xAA9F}, components={{chip="secondary",score=0xAA7B,trigger="b2music"}},
+    source="FLAG SHIP 0113 FBS" },
+  { id="SHIP_SHOTOFF", name="SHIP SHOTOFF", chip="primary",
+    route={kind="terse", word=0xAAD3}, components={{chip="primary",score=0xAAAA,trigger="bmusic"}},
+    source="FLAG SHIP 0113 SO" },
+  { id="BLACK_HOLE", name="BLACK HOLE EMERGENCE", chip="both",
+    route={kind="terse", word=0xAB80},
+    components={{chip="primary",score=0xAADE,trigger="pmusic"},{chip="secondary",score=0xAB2F,trigger="p2music"}},
+    source="FLAG SHIP 0114 BH" },
 }
 
 
@@ -123,9 +198,8 @@ local S = {
 
   catalog = {},
   source_label = "GORF PROGRAM 2 ROM",
-  filter = "all",
-  selection = { all=1, primary=1, secondary=1 },
-  window_first = { all=1, primary=1, secondary=1 },
+  selection = 1,
+  window_first = 1,
 
   status = "WAITING FOR GORF INITIALIZATION",
   last_controls = 0,
@@ -140,6 +214,7 @@ local S = {
   wav_active = false,
   wav_filename = nil,
   wav_stop_at = nil,
+  trace_enabled = true,
 
   ui_dirty = false,
   draw_count = 0,
@@ -172,6 +247,10 @@ local function chip_music_array(chip_name)
   return chip_name == "secondary" and C.SECONDARY_MUSIC or C.PRIMARY_MUSIC
 end
 
+local function chip_marker(chip_name)
+  return chip_name == "secondary" and "S" or "P"
+end
+
 -- ---------------------------------------------------------------------------
 -- Native Gorf music-processor state
 -- ---------------------------------------------------------------------------
@@ -184,21 +263,63 @@ local function native_processor_state(chip_name)
     startpc = read16(array + 0x02),
     soundbox = program:read_u8(array + 0x04),
     multiple = program:read_u8(array + 0x07),
-    mode08 = program:read_u8(array + 0x08),
+    priority = program:read_u8(array + 0x08),
     notetimer = program:read_u8(array + 0x2E),
     mst = program:read_u8(array + 0x2F),
   }
+end
+
+local SCORE_OPCODE_NAMES = {
+  [0x00]="RANDOMNOTES", [0x01]="DURATION", [0x02]="CONTJUMP", [0x03]="YIELD",
+  [0x04]="QUIET", [0x05]="RAMBLE", [0x06]="RAMP", [0x07]="MUSICIN",
+  [0x08]="RAMBLEON", [0x09]="RAMBLEOFF", [0x0A]="COUNTLIMITS", [0x0B]="MOVESTEP",
+  [0x0C]="MOVELOW", [0x0D]="MOVEHIGH", [0x0E]="MOVETB", [0x0F]="MOVENOISE",
+  [0x10]="MASTER", [0x11]="TONEA", [0x12]="TONEB", [0x13]="TONEC",
+  [0x14]="VIBS", [0x15]="MCVOLS", [0x16]="ABVOLS", [0x17]="NOISE",
+  [0x18]="MOVESOUND", [0x19]="PANLIMIT", [0x1A]="MOVEVOLS", [0x1B]="THUMPER",
+}
+
+local function route_text(entry)
+  local r = entry.route
+  if r.kind == "terse" then return "TERSE " .. hex4(r.word) end
+  if r.kind == "routine" then return "NATIVE ROUTINE " .. hex4(r.routine) end
+  return string.format("NATIVE SCORE %s %s %s", hex4(r.score), r.chip:upper(), r.trigger:upper())
+end
+
+local function component_text(component)
+  local text = string.format("%s:%s/%s", component.chip:upper(), hex4(component.score), component.trigger:upper())
+  if component.endpoint then
+    text = text .. string.format(" endpoint=%s@%s", component.endpoint.kind:upper(), hex4(component.endpoint.pc))
+  end
+  return text
+end
+
+local function log_processor_state(prefix, chip_name)
+  local s = native_processor_state(chip_name)
+  printf("[GORF SOUND] %s %-9s MUSPC=%s STARTPC=%s PRIORITY=%02X MULTIPLE=%02X MST=%02X TIMER=%02X SOUNDBOX=%02X",
+    prefix, chip_name:upper(), hex4(s.muspc), hex4(s.startpc), s.priority, s.multiple,
+    s.mst, s.notetimer, s.soundbox)
+end
+
+local function pre_reset_state_text(primary, secondary)
+  return string.format("P MUSPC=%s PRIORITY=%02X MST=%02X | S MUSPC=%s PRIORITY=%02X MST=%02X",
+    hex4(primary.muspc), primary.priority, primary.mst,
+    hex4(secondary.muspc), secondary.priority, secondary.mst)
+end
+
+local function log_selection(_reason)
+  local e = S.catalog[S.selection]
+  if not e then return end
+  local chip = e.chip == "both" and "B" or chip_marker(e.chip)
+  printf("[GORF SOUND] SELECT %02d %s %s", S.selection, chip, e.name)
 end
 
 local function set_catalog(entries, label)
   S.catalog = entries
   S.source_label = label or "GORF PROGRAM 2 ROM"
   S.source_path = nil
-  for _, filter in ipairs({"all", "primary", "secondary"}) do
-    S.selection[filter] = 1
-    S.window_first[filter] = 1
-  end
-  S.filter = "all"
+  S.selection = 1
+  S.window_first = 1
   S.ui_dirty = true
 end
 
@@ -252,6 +373,86 @@ local function rom_bytes(address, count)
   return table.concat(out, " ")
 end
 
+local function validate_catalog()
+  if #ROM_CATALOG ~= 20 then return false, "catalog event count is not 20" end
+  local ids, scores, endpoint_count = {}, {}, 0
+  local route_counts = {terse=0, routine=0, score=0}
+  local composite_count = 0
+  local expected_endpoints = {
+    INVADER_THUMP={kind="terminal", pc=0x812F},
+    GALAXIAN_ATTACK={kind="continuous", pc=0x97BE},
+  }
+  local seen_endpoints = {}
+  for index, entry in ipairs(ROM_CATALOG) do
+    if ids[entry.id] then return false, "duplicate catalog id " .. entry.id end
+    ids[entry.id] = true
+    if not entry.route or not entry.components or #entry.components == 0 then
+      return false, string.format("catalog item %d is incomplete", index)
+    end
+    local r = entry.route
+    route_counts[r.kind] = (route_counts[r.kind] or 0) + 1
+    if entry.chip == "both" then composite_count = composite_count + 1 end
+    if r.kind == "terse" then
+      if program:read_u8(r.word) ~= 0xCF then
+        return false, string.format("TERSE word signature differs at %s", hex4(r.word))
+      end
+    elseif r.kind == "routine" then
+      if program:read_u8(r.routine) ~= 0x21 then
+        return false, string.format("native launcher signature differs at %s", hex4(r.routine))
+      end
+    elseif r.kind ~= "score" then
+      return false, "unknown route kind " .. tostring(r.kind)
+    end
+    local component_chips = {}
+    for _, component in ipairs(entry.components) do
+      if component.chip ~= "primary" and component.chip ~= "secondary" then
+        return false, string.format("invalid processor in catalog item %d", index)
+      end
+      if component_chips[component.chip] then
+        return false, string.format("duplicate %s component in catalog item %d", component.chip, index)
+      end
+      component_chips[component.chip] = true
+      local opcode = program:read_u8(component.score)
+      if opcode > 0x1B then
+        return false, string.format("score signature differs at %s", hex4(component.score))
+      end
+      scores[component.score] = true
+      if component.endpoint then
+        local endpoint = component.endpoint
+        if endpoint.kind ~= "terminal" and endpoint.kind ~= "continuous" then
+          return false, string.format("invalid endpoint policy in catalog item %d", index)
+        end
+        if type(endpoint.pc) ~= "number" or endpoint.pc < 0 or endpoint.pc > 0xFFFF then
+          return false, string.format("invalid endpoint PC in catalog item %d", index)
+        end
+        local expected = expected_endpoints[entry.id]
+        if not expected or endpoint.kind ~= expected.kind or endpoint.pc ~= expected.pc then
+          return false, string.format("stationary endpoint differs for %s", entry.id)
+        end
+        seen_endpoints[entry.id] = true
+        endpoint_count = endpoint_count + 1
+      end
+    end
+  end
+  local score_count = 0
+  for _ in pairs(scores) do score_count = score_count + 1 end
+  if score_count ~= 24 then return false, string.format("catalog has %d distinct scores, expected 24", score_count) end
+  if endpoint_count ~= 2 then
+    return false, string.format("catalog has %d stationary endpoints, expected 2", endpoint_count)
+  end
+  for id in pairs(expected_endpoints) do
+    if not seen_endpoints[id] then return false, "missing stationary endpoint for " .. id end
+  end
+  if route_counts.terse ~= 15 or route_counts.routine ~= 3 or route_counts.score ~= 2 then
+    return false, string.format("route counts are %d TERSE / %d native / %d exact",
+      route_counts.terse, route_counts.routine, route_counts.score)
+  end
+  if composite_count ~= 5 then
+    return false, string.format("catalog has %d composite events, expected 5", composite_count)
+  end
+  return true, string.format("20 events / %d distinct scores / %d stationary endpoints", score_count, endpoint_count)
+end
+
 local function validate_program()
   -- English Program-2 SPK_INSERT signature. This first build is intentionally
   -- scoped to the resident English Gorf requested for testing.
@@ -275,6 +476,15 @@ local function validate_program()
   if program:read_u8(C.ENDMUS) ~= 0x03 then
     return false, string.format("ENDMUS byte differs at %s", hex4(C.ENDMUS))
   end
+  local write_sig = {0x78,0xD3,0x19,0x79,0xD3,0x0C}
+  for i = 1, #write_sig do
+    if program:read_u8(C.WRITE + i - 1) ~= write_sig[i] then
+      return false, string.format("native pattern writer differs at %s", hex4(C.WRITE + i - 1))
+    end
+  end
+  if program:read_u8(C.RELABS) ~= 0xC3 then
+    return false, string.format("RELABS vector is not initialized at %s", hex4(C.RELABS))
+  end
   local score1354 = {0x14,0x86,0x10,0x10,0x06,0x10}
   for i = 1, #score1354 do
     if program:read_u8(0x1354 + i - 1) ~= score1354[i] then
@@ -291,8 +501,11 @@ local function validate_program()
   S.bmusic = C.BMUSIC
   S.pmusic = C.PMUSIC
 
-  return true, string.format("drawchar=%s busaround=%s bmusic=%s pmusic=%s",
-    hex4(S.drawchar), hex4(C.BUSAROUND), hex4(S.bmusic), hex4(S.pmusic))
+  local catalog_ok, catalog_why = validate_catalog()
+  if not catalog_ok then return false, catalog_why end
+
+  return true, string.format("drawchar=%s busaround=%s bmusic=%s pmusic=%s; %s",
+    hex4(S.drawchar), hex4(C.BUSAROUND), hex4(S.bmusic), hex4(S.pmusic), catalog_why)
 end
 
 local function install_idle_loop()
@@ -320,7 +533,8 @@ local function transliterate_for_gorf(text)
   local out = {}
   for i = 1, #s do
     local b = s:byte(i)
-    if (b >= 0x30 and b <= 0x39) or (b >= 0x41 and b <= 0x5A) or b == 0x20 then
+    if (b >= 0x30 and b <= 0x39) or (b >= 0x41 and b <= 0x5A)
+        or b == 0x20 or b == 0x2D or b == 0x5E then
       out[#out + 1] = string.char(b)
     else
       out[#out + 1] = " "
@@ -351,74 +565,77 @@ local function centered_text_y(text)
   return 0x6000 - (#text * 0x0380)
 end
 
-local function visible_catalog()
-  if S.filter == "all" then return S.catalog end
-  local out = {}
-  for _, e in ipairs(S.catalog) do
-    if e.chip == S.filter then out[#out + 1] = e end
-  end
-  return out
+local function text_y_at_column(column)
+  return centered_text_y(string.rep(" ", C.UI_WIDTH)) + (column * 0x0700)
 end
 
 local function selected_entry()
-  local list = visible_catalog()
-  local index = S.selection[S.filter] or 1
-  return index, list[index], list
+  return S.selection, S.catalog[S.selection], S.catalog
 end
 
 local function keep_selection_visible(index)
-  local list = visible_catalog()
-  local filter = S.filter
+  local list = S.catalog
   if #list == 0 then
-    S.selection[filter] = 0
-    S.window_first[filter] = 1
+    S.selection = 0
+    S.window_first = 1
     return
   end
   if index < 1 then index = 1 end
   if index > #list then index = #list end
-  S.selection[filter] = index
-  local first = S.window_first[filter] or 1
+  S.selection = index
+  local first = S.window_first or 1
   if index < first then first = index
   elseif index > first + C.UI_ROWS - 1 then first = index - C.UI_ROWS + 1 end
   local max_first = math.max(1, #list - C.UI_ROWS + 1)
   if first < 1 then first = 1 end
   if first > max_first then first = max_first end
-  S.window_first[filter] = first
+  S.window_first = first
 end
 
 local function status_line()
-  local wav = S.wav_enabled and "WAV ON" or "WAV OFF"
-  if S.batch then return string.format("PLAY ALL %d %s", S.batch.completed, wav) end
-  if S.playback then
-    if S.status == "LOOPING" then return "LOOPING " .. wav end
-    return "PLAYING " .. wav
+  local wav = S.wav_enabled and " WAV" or ""
+  if S.batch then
+    if S.batch.stop_requested then return "STOP AFTER CURRENT" .. wav end
+    local index = S.batch.current_index or math.min(S.batch.next_index or 1, S.batch.total)
+    local entry = S.catalog[index]
+    if S.playback and entry then return string.format("PLAY ALL %02d %s%s", index, entry.name, wav) end
+    return string.format("PLAY ALL READY %02d%s", index, wav)
   end
-  return "READY " .. wav
+  if S.playback then
+    local state = (S.status == "LOOPING" or S.status == "CONTINUOUS") and S.status or "PLAYING"
+    return string.format("%s %02d %s%s", state, S.playback.index, S.playback.entry.name, wav)
+  end
+  if S.status and S.status ~= "READY" then return S.status .. wav end
+  return "READY" .. wav
 end
 
 local function native_menu_lines()
-  local list = visible_catalog()
-  local selected = S.selection[S.filter] or 0
-  local first = S.window_first[S.filter] or 1
+  local list = S.catalog
+  local selected = S.selection or 0
+  local first = S.window_first or 1
   local max_first = math.max(1, #list - C.UI_ROWS + 1)
   if first < 1 then first = 1 end
   if first > max_first then first = max_first end
-  S.window_first[S.filter] = first
+  S.window_first = first
 
   local lines = {}
-  local filter_name = S.filter == "all" and "ALL" or (S.filter == "primary" and "PRIMARY" or "SECONDARY")
-  lines[#lines + 1] = { row=0, text=native_center("GORF SOUND " .. filter_name), attr=C.ATTR_BLUE }
-
   local vmaj, vmin, vpatch = VERSION:match("^(%d+)%.(%d+)%.(%d+)")
   local short_version = vmaj and ("V" .. vmaj .. vmin .. vpatch) or "VER"
   lines[#lines + 1] = {
-    row=1,
-    text=string.rep(" ", math.max(0, C.UI_WIDTH - #short_version)) .. short_version,
+    row=0,
+    column=0,
+    text="GORF SOUND BROWSER",
     attr=C.ATTR_BLUE
+  }
+  lines[#lines + 1] = {
+    row=0,
+    column=C.UI_WIDTH - #short_version,
+    text=short_version,
+    attr=C.ATTR_YELLOW
   }
 
   if #list == 0 then
-    lines[#lines + 1] = { row=2, text=native_center("NO SOUNDS IN FILTER"), attr=C.ATTR_RED }
+    lines[#lines + 1] = { row=2, text=native_center("NO SOUNDS"), attr=C.ATTR_RED }
     for row = 1, C.UI_ROWS - 1 do
       lines[#lines + 1] = { row=2 + row, text=string.rep(" ", C.UI_WIDTH), attr=C.ATTR_RED }
     end
@@ -428,7 +645,7 @@ local function native_menu_lines()
       local e = list[idx]
       local line = string.rep(" ", C.UI_WIDTH)
       if e then
-        local chip = e.chip == "secondary" and "S" or "P"
+        local chip = e.chip == "secondary" and "S" or (e.chip == "primary" and "P" or "B")
         line = string.format(" %02d %s %s", idx, chip, fixed_native_text(e.name, C.UI_WIDTH - 6))
       end
       lines[#lines + 1] = {
@@ -440,11 +657,10 @@ local function native_menu_lines()
   end
 
   lines[#lines + 1] = { row=9, text=native_center(status_line()), attr=C.ATTR_BLUE }
-  lines[#lines + 1] = { row=10, text=native_center("UP DOWN SELECT FIRE PLAY"), attr=C.ATTR_YELLOW }
-  lines[#lines + 1] = { row=11, text=native_center("LEFT RIGHT CHIP FILTER"), attr=C.ATTR_YELLOW }
+  lines[#lines + 1] = { row=11, text=native_center("^ V SELECT - FIRE PLAY"), attr=C.ATTR_YELLOW }
   lines[#lines + 1] = {
     row=12,
-    text=native_center(S.batch and "1P EXIT 2P STOP" or "1P EXIT 2P PLAY ALL"),
+    text=native_center(S.batch and "1P EXIT - 2P STOP" or "1P EXIT - 2P PLAY ALL"),
     attr=C.ATTR_YELLOW
   }
   return lines
@@ -463,40 +679,110 @@ local function write_native_draw_program(lines)
     strings[#strings + 1] = addr
   end
 
+  -- Gorf's resident character table has no hyphen. This six-column 1bpp
+  -- pattern supplies a centered dash through the native Pattern Board writer.
+  local dash_glyph = data
+  local dash_bytes = {0x00,0x00, 0x01,0x80, 0x01,0x80, 0x01,0x80, 0x01,0x80, 0x00,0x00}
+  for _, byte in ipairs(dash_bytes) do program:write_u8(data, byte); data = data + 1 end
+
   local code = {}
   local function emit(v) code[#code + 1] = v & 0xFF end
   local function emit16(v) emit(v); emit(v >> 8) end
+  local labels, relative_patches, absolute_patches = {}, {}, {}
+  local function mark(name) labels[name] = #code end
+  local function emit_jr(opcode, target)
+    emit(opcode)
+    local operand = #code + 1
+    emit(0)
+    relative_patches[#relative_patches + 1] = {operand=operand, target=target}
+  end
+  local function emit_call_address(address)
+    emit(0xCD); emit16(address)
+  end
+  local function emit_call_label(target)
+    emit(0xCD)
+    local operand = #code + 1
+    emit(0); emit(0)
+    absolute_patches[#absolute_patches + 1] = {operand=operand, target=target}
+  end
 
   emit(0xF3); emit(0xDD); emit(0xE5); emit(0xFD); emit(0xE5) -- DI/PUSH IX/PUSH IY
 
-  local call_sites = {}
   for i, line in ipairs(lines) do
     emit(0x01); emit16(line.attr)
     emit(0x11); emit16(screen_line_x(line.row))
-    emit(0x21); emit16(centered_text_y(line.text))
+    emit(0x21); emit16(line.column and text_y_at_column(line.column) or centered_text_y(line.text))
     emit(0xDD); emit(0x21); emit16(strings[i])
-    emit(0xCD); call_sites[#call_sites + 1] = #code + 1; emit16(0)
+    emit_call_label("draw_string")
   end
 
   emit(0xFD); emit(0xE1); emit(0xDD); emit(0xE1); emit(0xFB)
   emit(0xC3); emit16(C.IDLE_LOOP + 1)
 
-  local draw_string = C.DRAW_CODE + #code
+  mark("draw_string")
+  mark("draw_string_loop")
   emit(0xDD); emit(0x7E); emit(0x00)
   emit(0xB7); emit(0xC8)
   emit(0xDD); emit(0x23)
-  emit(0xDD); emit(0xE5)
-  emit(0xCD); emit16(S.drawchar)
-  emit(0xDD); emit(0xE1)
-  emit(0x18); emit(0xF0)
 
-  for _, pos in ipairs(call_sites) do
-    code[pos] = draw_string & 0xFF
-    code[pos + 1] = (draw_string >> 8) & 0xFF
+  emit(0xFE); emit(0x2D)                       -- CP '-' (injected dash glyph)
+  emit_jr(0x28, "draw_dash")                  -- JR Z,draw_dash
+  emit(0xFE); emit(0x5E)                       -- CP '^' (flipped native V glyph)
+  emit_jr(0x28, "draw_up_arrow")              -- JR Z,draw_up_arrow
+
+  mark("draw_standard")
+  emit(0xDD); emit(0xE5)
+  emit_call_address(S.drawchar)
+  emit(0xDD); emit(0xE1)
+  emit_jr(0x18, "draw_string_loop")
+
+  mark("draw_up_arrow")
+  emit(0x3E); emit(0x56)                       -- LD A,'V'
+  emit(0xCB); emit(0xF1)                       -- SET 6,C: vertical flop -> up arrow
+  emit(0xDD); emit(0xE5)
+  emit_call_address(S.drawchar)
+  emit(0xDD); emit(0xE1)
+  emit(0xCB); emit(0xB1)                       -- RES 6,C
+  emit_jr(0x18, "draw_string_loop")
+
+  mark("draw_dash")
+  emit(0xDD); emit(0xE5)
+  emit_call_label("draw_dash_glyph")
+  emit(0xDD); emit(0xE1)
+  emit_jr(0x18, "draw_string_loop")
+
+  -- draw_dash_glyph mirrors the tail of Gorf's drawchar routine, substituting
+  -- the injected six-column bitmap while retaining RELABS and write.
+  mark("draw_dash_glyph")
+  emit(0xC5); emit(0xE5); emit(0xD5)           -- PUSH BC/HL/DE
+  emit(0xFD); emit(0x21); emit16(dash_glyph)   -- LD IY,dash_glyph
+  emit(0xD1); emit(0xE1); emit(0xE5); emit(0xD5)
+  emit_call_address(C.RELABS)
+  emit(0x11); emit16(0x0602)                   -- LD DE,$0602
+  emit_call_address(C.WRITE)
+  emit(0xD1); emit(0xE1)
+  emit(0x7C); emit(0xC6); emit(0x07); emit(0x67)
+  emit(0xC1); emit(0xC9)                       -- POP BC / RET
+
+  for _, patch in ipairs(relative_patches) do
+    local target = labels[patch.target]
+    if target == nil then return false, "unresolved native UI branch " .. patch.target end
+    local displacement = target - patch.operand
+    if displacement < -128 or displacement > 127 then
+      return false, "native UI branch exceeds JR range"
+    end
+    code[patch.operand] = displacement & 0xFF
+  end
+  for _, patch in ipairs(absolute_patches) do
+    local target = labels[patch.target]
+    if target == nil then return false, "unresolved native UI call " .. patch.target end
+    local address = C.DRAW_CODE + target
+    code[patch.operand] = address & 0xFF
+    code[patch.operand + 1] = (address >> 8) & 0xFF
   end
 
   if C.DRAW_CODE + #code >= C.DRAW_DATA then return false, "native UI code exceeds reserved RAM" end
-  if data >= C.CALL_STACK - 0x40 or data > 0xD7FF then return false, "native UI strings exceed work RAM" end
+  if data >= C.TERSE_THREAD then return false, "native UI strings exceed reserved draw RAM" end
 
   for i, b in ipairs(code) do program:write_u8(C.DRAW_CODE + i - 1, b) end
   return true
@@ -577,7 +863,8 @@ local function stop_sound(reason)
     end
   end
   if S.playback then
-    printf("[GORF SOUND] STOP %s%s", tostring(S.playback.entry.name), reason and (" (" .. reason .. ")") or "")
+    printf("[GORF SOUND] STOP %02d %s%s", S.playback.index, tostring(S.playback.entry.name),
+      reason and (" (" .. reason .. ")") or "")
   end
   S.playback = nil
   if S.wav_active and not S.wav_stop_at then S.wav_stop_at = machine_seconds() + C.WAV_POSTROLL_SEC end
@@ -604,31 +891,50 @@ local function emit_native_emusic(code, array, soundbox)
 end
 
 local function write_native_play_launcher(entry)
-  local array = chip_music_array(entry.chip)
-  local trigger = entry.trigger == "bmusic" and C.BMUSIC or C.PMUSIC
+  local route = entry.route
   local code = {}
   local function emit(v) code[#code + 1] = v & 0xFF end
   local function emit16(v) emit(v); emit(v >> 8) end
 
   emit(0xF3)                                  -- DI
-  emit(0xDD); emit(0xE5)                     -- PUSH IX
-  emit(0xFD); emit(0xE5)                     -- PUSH IY
 
-  -- The browser auditions one score at a time.  Stop both native processors
-  -- through Gorf's ROM emusic routine, then start the selected score using the
-  -- same bmusic/pmusic entry used by its original game caller.
+  -- Stop both native processors through Gorf's emusic routine before submitting
+  -- the selected event through its documented game path.
   emit_native_emusic(code, C.PRIMARY_MUSIC, 0x18)
   emit_native_emusic(code, C.SECONDARY_MUSIC, 0x58)
 
   emit(0x3E); emit(0x01)                     -- LD A,1
   emit(0x32); emit16(C.MUSICFLAG)             -- LD (MUSICFLAG),A
-  emit(0x21); emit16(entry.address)           -- LD HL,score
-  emit(0xFD); emit(0x21); emit16(array)       -- LD IY,selected music array
-  emit(0xCD); emit16(trigger)                 -- CALL original bmusic/pmusic
-  emit(0xFD); emit(0xE1)                     -- POP IY
-  emit(0xDD); emit(0xE1)                     -- POP IX
-  emit(0xFB)                                  -- EI
-  emit(0xC3); emit16(C.IDLE_LOOP + 1)         -- JP HALT/service loop
+
+  if route.kind == "terse" then
+    -- A tiny TERSE thread dispatches the original colon word.  Its RETURN lands
+    -- on a RAM CODE word that re-enables interrupts and rejoins the HALT loop.
+    program:write_u8(C.TERSE_THREAD + 0, route.word & 0xFF)
+    program:write_u8(C.TERSE_THREAD + 1, route.word >> 8)
+    program:write_u8(C.TERSE_THREAD + 2, C.TERSE_EXIT & 0xFF)
+    program:write_u8(C.TERSE_THREAD + 3, C.TERSE_EXIT >> 8)
+    program:write_u8(C.TERSE_EXIT + 0, 0xFB)  -- EI
+    program:write_u8(C.TERSE_EXIT + 1, 0xC3)  -- JP idle HALT/service loop
+    program:write_u8(C.TERSE_EXIT + 2, (C.IDLE_LOOP + 1) & 0xFF)
+    program:write_u8(C.TERSE_EXIT + 3, (C.IDLE_LOOP + 1) >> 8)
+    emit(0xDD); emit(0x21); emit16(C.TERSE_RETURN_STACK) -- LD IX,TERSE RSP
+    emit(0x31); emit16(C.CALL_STACK)                    -- LD SP,TERSE PSP
+    emit(0xFD); emit(0x21); emit16(C.DSPATCH)           -- LD IY,DSPATCH
+    emit(0x01); emit16(C.TERSE_THREAD)                  -- LD BC,event thread
+    emit(0xC3); emit16(C.DSPATCH)                       -- JP DSPATCH
+  elseif route.kind == "routine" then
+    emit(0xCD); emit16(route.routine)          -- CALL exact native game launcher
+    emit(0xFB)
+    emit(0xC3); emit16(C.IDLE_LOOP + 1)
+  else
+    local array = chip_music_array(route.chip)
+    local trigger = route.trigger == "bmusic" and C.BMUSIC or C.PMUSIC
+    emit(0x21); emit16(route.score)            -- LD HL,score
+    emit(0xFD); emit(0x21); emit16(array)      -- LD IY,game music processor
+    emit(0xCD); emit16(trigger)                -- CALL exact game engine entry
+    emit(0xFB)
+    emit(0xC3); emit16(C.IDLE_LOOP + 1)
+  end
 
   if C.PLAY_CODE + #code >= (C.CALL_STACK - 0x40) then return false, "native launcher exceeds reserved RAM" end
   for i, b in ipairs(code) do program:write_u8(C.PLAY_CODE + i - 1, b) end
@@ -674,19 +980,27 @@ local function start_native(entry, index, source)
   if cpu.state["HALT"] then cpu.state["HALT"].value = 0 end
   cpu.state["PC"].value = C.PLAY_CODE
 
+  local tracks = {}
+  for _, component in ipairs(entry.components) do
+    if not tracks[component.chip] then
+      tracks[component.chip] = {
+        chip=component.chip, music_array=chip_music_array(component.chip), expected_score=component.score,
+        armed=false, seen_running=false,
+        last_pc=nil, pc_seen={}, transitions=0, ended=false, loop_detected=false, loop_pc=nil,
+        endpoint=component.endpoint,
+      }
+    end
+  end
   S.playback = {
     mode="native",
     entry=entry,
     index=index,
     source=source or "manual",
     start_time=machine_seconds(),
-    music_array=chip_music_array(entry.chip),
-    seen_running=false,
-    last_pc=nil,
-    pc_seen={},
-    transitions=0,
+    tracks=tracks,
     loop_detected=false,
-    loop_pc=nil,
+    stationary_end=false,
+    launch_complete=false,
   }
   return true
 end
@@ -702,7 +1016,8 @@ local function start_entry(entry, index, source)
     if not ok then return false, err end
   end
 
-  if entry.mode ~= "native" then return false, "ROM browser catalog contains a non-native entry" end
+  local primary_before = native_processor_state("primary")
+  local secondary_before = native_processor_state("secondary")
   local ok, err = start_native(entry, index, source)
 
   if not ok then
@@ -710,9 +1025,14 @@ local function start_entry(entry, index, source)
     return false, err
   end
 
-  local chip = entry.chip == "secondary" and "SECONDARY" or "PRIMARY"
-  printf("[GORF SOUND] PLAY %02d %s %s score=%s trigger=%s",
-    index, chip, entry.name, hex4(entry.address), tostring(entry.trigger or "pmusic"):upper())
+  print("")
+  printf("[GORF SOUND] PLAY %02d %s request=%s", index, entry.name, source or "manual")
+  printf("[GORF SOUND]   ROUTE %s", route_text(entry))
+  printf("[GORF SOUND]   SOURCE %s", tostring(entry.source))
+  printf("[GORF SOUND]   PRE-RESET %s", pre_reset_state_text(primary_before, secondary_before))
+  for i, component in ipairs(entry.components) do
+    printf("[GORF SOUND]   SUBMIT %d %s", i, component_text(component))
+  end
   S.status = "PLAYING"
   S.ui_dirty = true
   return true
@@ -740,40 +1060,92 @@ end
 local function service_playback()
   local p = S.playback
   if not p then return end
-
-  local pc = read16(p.music_array)
-  if pc ~= C.ENDMUS then p.seen_running = true end
-
-  -- The game's normal finite-score completion is authoritative.
-  if p.seen_running and pc == C.ENDMUS then
-    finish_playback("NATIVE END")
-    return
+  if not p.launch_complete then
+    if not foreground_idle() then return end
+    p.launch_complete = true
   end
 
-  -- Track only changes in Gorf's own MUSPC.  A repeated PC after at least two
-  -- intervening score transitions is a native score control-flow cycle, not an
-  -- audio/output heuristic.  Manual audition keeps the real loop running;
-  -- play-all stops it through emusic after one detected cycle so it can advance.
-  if pc ~= C.ENDMUS and pc ~= p.last_pc then
-    p.transitions = p.transitions + 1
-    local first_transition = p.pc_seen[pc]
-    if first_transition and (p.transitions - first_transition) >= C.LOOP_MIN_TRANSITIONS then
-      if not p.loop_detected then
-        p.loop_detected = true
-        p.loop_pc = pc
-        printf("[GORF SOUND] LOOP %02d %s MUSPC=%s transitions=%d",
-          p.index, tostring(p.entry.name), hex4(pc), p.transitions)
-        if p.source == "batch" then
-          finish_playback("NATIVE LOOP")
-          return
+  local all_ended = true
+  for _, chip_name in ipairs({"primary", "secondary"}) do
+    local track = p.tracks[chip_name]
+    if track then
+      local state = native_processor_state(chip_name)
+      local pc = state.muspc
+      if not track.armed and state.startpc == track.expected_score and pc ~= C.ENDMUS then
+        track.armed = true
+        track.seen_running = true
+        if S.trace_enabled then
+          printf("[GORF SOUND] START %02d %s STARTPC=%s MUSPC=%s",
+            p.index, chip_marker(chip_name), hex4(state.startpc), hex4(pc))
         end
-        S.status = "LOOPING"
-        S.ui_dirty = true
       end
-    else
-      p.pc_seen[pc] = p.transitions
+
+      if track.armed and pc ~= track.last_pc then
+        if pc == C.ENDMUS then
+          if track.seen_running and not track.ended then
+            track.ended = true
+            printf("[GORF SOUND] PROCESSOR END %02d %s transitions=%d",
+              p.index, chip_marker(chip_name), track.transitions)
+          end
+        else
+          track.transitions = track.transitions + 1
+          local opcode = program:read_u8(pc)
+          if S.trace_enabled then
+            printf("[GORF SOUND] STEP %02d %s MUSPC=%s OPCODE=%02X %-12s PRIORITY=%02X MULTIPLE=%02X MST=%02X TIMER=%02X",
+              p.index, chip_marker(chip_name), hex4(pc), opcode,
+              SCORE_OPCODE_NAMES[opcode] or "INVALID", state.priority, state.multiple, state.mst, state.notetimer)
+          end
+          local first_transition = track.pc_seen[pc]
+          if first_transition and (track.transitions - first_transition) >= C.LOOP_MIN_TRANSITIONS then
+            if not track.loop_detected then
+              track.loop_detected = true
+              track.loop_pc = pc
+              p.loop_detected = true
+              printf("[GORF SOUND] LOOP %02d %s %s MUSPC=%s transitions=%d",
+                p.index, chip_marker(chip_name), p.entry.name, hex4(pc), track.transitions)
+              if p.source == "batch" then
+                finish_playback("NATIVE LOOP")
+                return
+              end
+              S.status = "LOOPING"
+              S.ui_dirty = true
+            end
+          else
+            track.pc_seen[pc] = track.transitions
+          end
+        end
+        track.last_pc = pc
+      end
+
+      local endpoint = track.endpoint
+      if track.armed and endpoint and track.seen_running and pc == endpoint.pc and state.mst == 0 then
+        if endpoint.kind == "terminal" and not track.ended then
+          track.ended = true
+          p.stationary_end = true
+          printf("[GORF SOUND] PROCESSOR STATIONARY END %02d %s %s MUSPC=%s transitions=%d",
+            p.index, chip_marker(chip_name), p.entry.name, hex4(pc), track.transitions)
+        elseif endpoint.kind == "continuous" and not track.loop_detected then
+          track.loop_detected = true
+          track.loop_pc = pc
+          p.loop_detected = true
+          printf("[GORF SOUND] PROCESSOR CONTINUOUS %02d %s %s MUSPC=%s transitions=%d",
+            p.index, chip_marker(chip_name), p.entry.name, hex4(pc), track.transitions)
+          if p.source == "batch" then
+            finish_playback("NATIVE CONTINUOUS")
+            return
+          end
+          S.status = "CONTINUOUS"
+          S.ui_dirty = true
+        end
+      end
+      if not track.armed or not track.ended then all_ended = false end
     end
-    p.last_pc = pc
+  end
+
+  -- Completion is authoritative only after every processor used by the event
+  -- has run and returned to Gorf's ENDMUS sentinel.
+  if all_ended then
+    finish_playback(p.stationary_end and "NATIVE STATIONARY END" or "NATIVE END")
   end
 end
 
@@ -790,39 +1162,24 @@ end
 -- ---------------------------------------------------------------------------
 
 local function move_selection(delta)
-  local list = visible_catalog()
+  local list = S.catalog
   if #list == 0 then return end
-  local current = S.selection[S.filter] or 1
+  local current = S.selection or 1
   if current < 1 then current = 1 end
   local n = current + delta
   if n < 1 then n = #list elseif n > #list then n = 1 end
   keep_selection_visible(n)
-  S.status = "READY"
+  if not S.playback and not S.batch then S.status = "READY" end
   S.ui_dirty = true
-end
-
-local FILTERS = { "all", "primary", "secondary" }
-local function cycle_filter(delta)
-  local at = 1
-  for i, f in ipairs(FILTERS) do if f == S.filter then at = i; break end end
-  at = at + delta
-  if at < 1 then at = #FILTERS elseif at > #FILTERS then at = 1 end
-  S.filter = FILTERS[at]
-  local list = visible_catalog()
-  local sel = S.selection[S.filter] or 1
-  if #list == 0 then sel = 0 elseif sel < 1 or sel > #list then sel = 1 end
-  S.selection[S.filter] = sel
-  keep_selection_visible(sel)
-  S.status = "READY"
-  S.ui_dirty = true
+  log_selection(delta < 0 and "up" or "down")
 end
 
 local function start_play_all()
   if not S.takeover then print("[GORF SOUND] gsall(): browser has not taken over yet"); return false end
   if S.batch then print("[GORF SOUND] gsall(): play-all already active"); return false end
   if S.playback or S.wav_active then print("[GORF SOUND] gsall(): wait for current sound/WAV"); return false end
-  local list = visible_catalog()
-  if #list == 0 then print("[GORF SOUND] gsall(): no sounds in current filter"); return false end
+  local list = S.catalog
+  if #list == 0 then print("[GORF SOUND] gsall(): catalog is empty"); return false end
   S.batch = { next_index=1, current_index=nil, completed=0, total=#list, stop_requested=false }
   printf("[GORF SOUND] play-all: %d sounds; WAV %s", #list, S.wav_enabled and "ON" or "OFF")
   S.ui_dirty = true
@@ -869,7 +1226,7 @@ local function service_batch()
   end
   if b.current_index or S.playback or S.wav_active then return end
 
-  local list = visible_catalog()
+  local list = S.catalog
   if b.next_index > #list then
     printf("[GORF SOUND] play-all complete: %d sounds", b.completed)
     S.batch = nil
@@ -880,7 +1237,7 @@ local function service_batch()
   local index = b.next_index
   b.next_index = b.next_index + 1
   b.current_index = index
-  S.selection[S.filter] = index
+  S.selection = index
   keep_selection_visible(index)
   local ok, err = start_entry(list[index], index, "batch")
   if not ok then
@@ -923,9 +1280,6 @@ local function process_inputs()
   if start2_pressed then start_play_all() end
 
   local pressed = c & (~S.last_controls) & 0x3F
-  if (pressed & 0x04) ~= 0 then cycle_filter(-1) end
-  if (pressed & 0x08) ~= 0 then cycle_filter(1) end
-
   local dir = 0
   if (c & 0x01) ~= 0 and (c & 0x02) == 0 then dir = -1
   elseif (c & 0x02) ~= 0 and (c & 0x01) == 0 then dir = 1 end
@@ -969,11 +1323,14 @@ end
 -- ---------------------------------------------------------------------------
 
 local function console_list()
-  local list = visible_catalog()
-  printf("[GORF SOUND] %s filter: %d entries; source=%s", S.filter:upper(), #list, S.source_label)
+  local list = S.catalog
+  printf("[GORF SOUND] complete catalog: %d events / 24 distinct scores; source=%s", #list, S.source_label)
   for i, e in ipairs(list) do
-    printf("[GORF SOUND] %02d %-9s %-24s ROM %s %s",
-      i, e.chip:upper(), e.name, hex4(e.address), tostring(e.trigger):upper())
+    printf("[GORF SOUND] %02d %-9s %-22s %s",
+      i, e.chip:upper(), e.name, route_text(e))
+    local parts = {}
+    for _, component in ipairs(e.components) do parts[#parts + 1] = component_text(component) end
+    printf("[GORF SOUND]    scores=%s source=%s", table.concat(parts, " "), tostring(e.source))
   end
   return #list
 end
@@ -982,21 +1339,34 @@ local function console_info()
   local index, e = selected_entry()
   if not e then print("[GORF SOUND] no selected sound"); return nil end
   printf("[GORF SOUND] selected %02d id=%s name=%s", index, tostring(e.id), tostring(e.name))
-  printf("[GORF SOUND] chip=%s mode=NATIVE ROM", e.chip)
-  printf("[GORF SOUND] ROM score=%s trigger=%s",
-    hex4(e.address), tostring(e.trigger or "pmusic"):upper())
+  printf("[GORF SOUND] processors=%s route=%s", e.chip:upper(), route_text(e))
+  for i, component in ipairs(e.components) do
+    printf("[GORF SOUND] component %d %s", i, component_text(component))
+  end
   if e.source then printf("[GORF SOUND] source=%s", e.source) end
   return e
 end
 
+local function console_select(index)
+  index = math.floor(tonumber(index) or 0)
+  if index < 1 or index > #S.catalog then
+    printf("[GORF SOUND] gsselect(): index must be 1..%d", #S.catalog)
+    return false
+  end
+  keep_selection_visible(index)
+  if not S.playback and not S.batch then S.status = "READY" end
+  S.ui_dirty = true
+  log_selection("console")
+  return true
+end
+
 local function console_play(index)
   index = math.floor(tonumber(index) or 0)
-  local list = visible_catalog()
+  local list = S.catalog
   if index < 1 or index > #list then
     printf("[GORF SOUND] gsplay(): index must be 1..%d", #list)
     return false
   end
-  S.selection[S.filter] = index
   keep_selection_visible(index)
   local ok, err = start_entry(list[index], index, "console")
   if not ok then printf("[GORF SOUND] gsplay(): %s", tostring(err)) end
@@ -1006,34 +1376,37 @@ end
 local function console_audit()
   local index, e = selected_entry()
   if not e then print("[GORF SOUND] gsaudit(): no selected score"); return false end
-  local array = chip_music_array(e.chip)
   printf("[GORF SOUND] AUDIT %02d %s %s", index, e.chip:upper(), e.name)
-  printf("[GORF SOUND] score=%s trigger=%s source=%s",
-    hex4(e.address), tostring(e.trigger):upper(), tostring(e.source or "--"))
-  printf("[GORF SOUND] score bytes %s: %s", hex4(e.address), rom_bytes(e.address, 48))
-  printf("[GORF SOUND] array=%s MUSPC=%s STARTPC=%s SOUNDBOX=%02X multiple=%02X mode08=%02X NOTETIMER=%02X MST=%02X",
-    hex4(array), hex4(read16(array)), hex4(read16(array + 2)),
-    program:read_u8(array + 4), program:read_u8(array + 7),
-    program:read_u8(array + 8), program:read_u8(array + 0x2E), program:read_u8(array + 0x2F))
-  printf("[GORF SOUND] MUSICFLAG=%02X busaround=%s emusic=%s bmusic=%s pmusic=%s",
-    program:read_u8(C.MUSICFLAG), hex4(C.BUSAROUND), hex4(C.EMUSIC), hex4(C.BMUSIC), hex4(C.PMUSIC))
+  printf("[GORF SOUND] route=%s source=%s", route_text(e), tostring(e.source or "--"))
+  if e.route.kind == "terse" then
+    printf("[GORF SOUND] TERSE word %s: %s", hex4(e.route.word), rom_bytes(e.route.word, 24))
+  elseif e.route.kind == "routine" then
+    printf("[GORF SOUND] native routine %s: %s", hex4(e.route.routine), rom_bytes(e.route.routine, 16))
+  end
+  for i, component in ipairs(e.components) do
+    printf("[GORF SOUND] component %d %s bytes: %s", i, component_text(component), rom_bytes(component.score, 48))
+  end
+  log_processor_state("AUDIT", "primary")
+  log_processor_state("AUDIT", "secondary")
+  printf("[GORF SOUND] MUSICFLAG=%02X dspatch=%s busaround=%s emusic=%s bmusic=%s pmusic=%s",
+    program:read_u8(C.MUSICFLAG), hex4(C.DSPATCH), hex4(C.BUSAROUND), hex4(C.EMUSIC), hex4(C.BMUSIC), hex4(C.PMUSIC))
   return true
 end
 
 local function console_state()
   for _, chip_name in ipairs({"primary", "secondary"}) do
     local s = native_processor_state(chip_name)
-    printf("[GORF SOUND] %-9s array=%s MUSPC=%s STARTPC=%s SOUNDBOX=%02X multiple=%02X mode08=%02X NOTETIMER=%02X MST=%02X",
+    printf("[GORF SOUND] %-9s array=%s MUSPC=%s STARTPC=%s SOUNDBOX=%02X MULTIPLE=%02X PRIORITY=%02X NOTETIMER=%02X MST=%02X",
       chip_name:upper(), hex4(s.array), hex4(s.muspc), hex4(s.startpc), s.soundbox,
-      s.multiple, s.mode08, s.notetimer, s.mst)
+      s.multiple, s.priority, s.notetimer, s.mst)
   end
   printf("[GORF SOUND] MUSICFLAG=%02X", program:read_u8(C.MUSICFLAG))
   return true
 end
 
 local function console_diag()
-  printf("[GORF SOUND] diagnostic: drawchar=%s busaround=%s emusic=%s bmusic=%s pmusic=%s",
-    S.drawchar and hex4(S.drawchar) or "--", hex4(C.BUSAROUND), hex4(C.EMUSIC), hex4(C.BMUSIC), hex4(C.PMUSIC))
+  printf("[GORF SOUND] diagnostic: drawchar=%s dspatch=%s busaround=%s emusic=%s bmusic=%s pmusic=%s",
+    S.drawchar and hex4(S.drawchar) or "--", hex4(C.DSPATCH), hex4(C.BUSAROUND), hex4(C.EMUSIC), hex4(C.BMUSIC), hex4(C.PMUSIC))
   printf("[GORF SOUND] ROM %s busaround: %s", hex4(C.BUSAROUND), rom_bytes(C.BUSAROUND, 26))
   printf("[GORF SOUND] ROM %s emusic: %s", hex4(C.EMUSIC), rom_bytes(C.EMUSIC, 36))
   printf("[GORF SOUND] ROM %s bmusic: %s", hex4(C.BMUSIC), rom_bytes(C.BMUSIC, 22))
@@ -1048,13 +1421,15 @@ end
 local function print_console_commands()
   print("[GORF SOUND] console commands:")
   print("  gswav() / gswav(true|false)   WAV capture toggle/set")
-  print("  gsall()                        play all in current filter")
+  print("  gsall()                        play complete catalog")
   print("  gsstop()                       stop current sound/play-all")
-  print("  gsplay(n)                      play visible item n")
-  print("  gslist()                       list visible catalog")
+  print("  gsselect(n)                    select catalog item n")
+  print("  gsplay(n)                      play catalog item n")
+  print("  gslist()                       list complete catalog")
   print("  gsinfo()                       selected ROM score details")
   print("  gsaudit()                      dump selected score/engine state")
   print("  gsstate()                      dump native Gorf processor state")
+  print("  gstrace() / gstrace(true|false) score-transition log toggle/set")
   print("  gsdiag()                       dump Gorf music-engine anchors")
   print("  gsexit()                       exit MAME")
   print("  gshelp()                       show this list")
@@ -1070,11 +1445,18 @@ local function install_console_shortcuts()
   install_console_shortcut("gswav", function(value) return set_wav_capture(value) end)
   install_console_shortcut("gsall", function() return start_play_all() end)
   install_console_shortcut("gsstop", function() return stop_play_all() end)
+  install_console_shortcut("gsselect", function(index) return console_select(index) end)
   install_console_shortcut("gsplay", function(index) return console_play(index) end)
   install_console_shortcut("gslist", function() return console_list() end)
   install_console_shortcut("gsinfo", function() return console_info() end)
   install_console_shortcut("gsaudit", function() return console_audit() end)
   install_console_shortcut("gsstate", function() return console_state() end)
+  install_console_shortcut("gstrace", function(value)
+    if value == nil then value = not S.trace_enabled end
+    S.trace_enabled = value == true
+    printf("[GORF SOUND] score-transition trace %s", S.trace_enabled and "ON" or "OFF")
+    return S.trace_enabled
+  end)
   install_console_shortcut("gsdiag", function() return console_diag() end)
   install_console_shortcut("gsexit", function() machine:exit() end)
   install_console_shortcut("gshelp", function() print_console_commands() end)
@@ -1124,8 +1506,9 @@ local function takeover(reason)
   S.ui_dirty = true
 
   printf("[GORF SOUND] browser takeover active (%s); %s", reason or "manual", why)
-  printf("[GORF SOUND] catalog: %d entries; source=%s", #S.catalog, S.source_label)
-  print("[GORF SOUND] controls: UP/DOWN select; LEFT/RIGHT chip filter; FIRE play/stop current; 1P exit; 2P play all/stop")
+  printf("[GORF SOUND] catalog: %d sound events / 24 distinct scores; source=%s", #S.catalog, S.source_label)
+  print("[GORF SOUND] controls: UP/DOWN select/scroll; FIRE play/stop current; 1P exit; 2P play all/stop")
+  log_selection("takeover")
   return true
 end
 
@@ -1151,17 +1534,17 @@ print("============================================================")
 printf("[GORF SOUND] GORF SOUND BROWSER %s", VERSION)
 printf("[GORF SOUND] takeover RAM: %s; UI code: %s; native launcher: %s; ROM patching: NONE",
   hex4(C.IDLE_LOOP), hex4(C.DRAW_CODE), hex4(C.PLAY_CODE))
-printf("[GORF SOUND] Gorf Program-2 engine: bmusic=%s pmusic=%s",
-  hex4(C.BMUSIC), hex4(C.PMUSIC))
+printf("[GORF SOUND] Gorf Program-2 engine: dspatch=%s bmusic=%s pmusic=%s",
+  hex4(C.DSPATCH), hex4(C.BMUSIC), hex4(C.PMUSIC))
 printf("[GORF SOUND] native engine: busaround=%s emusic=%s bmusic=%s pmusic=%s", hex4(C.BUSAROUND), hex4(C.EMUSIC), hex4(C.BMUSIC), hex4(C.PMUSIC))
-print("[GORF SOUND] playback: embedded Gorf ROM scores through the native music interpreter")
-print("[GORF SOUND] Lua sound writes/capture/replay: NONE; completion monitor: native MUSPC only")
+print("[GORF SOUND] playback: original TERSE event words and native game launchers through the ROM music interpreter")
+print("[GORF SOUND] Lua sound writes/capture/replay: NONE; completion monitor: native MUSPC plus 2 declared stationary endpoints")
 install_console_shortcuts()
 print_console_commands()
 print("============================================================")
 
 install_rom_catalog()
-printf("[GORF SOUND] ROM seed catalog: %d currently established top-level launch points", #S.catalog)
+printf("[GORF SOUND] complete ROM catalog: %d gameplay events / 24 distinct score streams", #S.catalog)
 
 if emu.add_machine_frame_notifier then
   S.frame_subscription = emu.add_machine_frame_notifier(on_frame)
