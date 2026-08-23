@@ -1,9 +1,7 @@
 <!-- SOUND_MAP.md -->
 # Gorf Program 2 Astrocade Sound Map
 
-Audit date: 2026-08-22.
-
-This document is the reverse-engineered reference for non-speech audio in the English Gorf Program 2 release ROM. It covers the two Astrocade sound blocks, Gorf's resident music processors, the score-bytecode interpreter, all 20 identified sound events, and all 24 score roots submitted by those events.
+This documents the non-speech audio in the English Gorf Program 2 release ROM. It covers the two Astrocade sound blocks, Gorf's resident music processors, the score-bytecode interpreter, all 20 identified sound events, and all 24 score roots submitted by those events.
 
 SC-01 speech is a separate subsystem documented in `SPEECH_MAP.md`. Gorf's non-speech audio consists of ROM score programs interpreted into Astrocade register writes. The scores are not PCM samples and are not Z80 instructions.
 
@@ -60,6 +58,8 @@ The block ports `$18` and `$58` transfer the corresponding eight-register bank a
 `pmusic` and `mpmusic` call `emusic` for the selected processor, install the new score, set `PRIORITY`, and request immediate interpretation through `MST`.
 
 `emusic` is the native stop operation. It writes the address of `ENDMUS` to `MUSPC`, clears work-array offsets `+$05` through `+$2F`, reads `SOUNDBOX`, and writes zero to all eight registers of that physical sound block.
+
+A direct call to `emusic` leaves `MUSPC=$0B85`. Final `QUIET` processing has an additional interpreter step. `quityet` calls `emusic`, returns with the score pointer in `HL` already advanced past the `$04` opcode, and then reaches `endprocess`. `endprocess` commits that post-`QUIET` `HL` value to `MUSPC`, overwriting the transient `$0B85`. The stable finite-score completion signature is therefore the cleared `+$05..+$2F` work-array range, with `MULTIPLE`, `PRIORITY`, `NOTETIMER`, and `MST` all zero. `STARTPC` and `SOUNDBOX` remain intact.
 
 ### TERSE music interface
 
@@ -170,7 +170,7 @@ Both processors use the same 48-byte layout. Offset `+$06` is cleared and otherw
 | `$1A` | `VOLMOVIN` | 4 | Configure volume motion: high, low, step, timebase |
 | `$1B` | `MOHITTIN` | 1 | Enable master-oscillator thumper synchronization |
 
-Opcode `$03` is not the stop operation. It yields after a programmed stage. Opcode `$04` performs the repeat-or-stop decision and calls `emusic` when `MULTIPLE` reaches zero. `ENDMUS` is the address installed by `emusic`; the interpreter does not execute it while the processor is idle.
+Opcode `$03` is not the stop operation. It yields after a programmed stage. Opcode `$04` performs the repeat-or-stop decision and calls `emusic` when `MULTIPLE` reaches zero. `ENDMUS` is the address installed by `emusic`; a final `QUIET` then leaves the cleared processor with `MUSPC` pointing one byte past that `QUIET` opcode.
 
 ### Demo-mode volume
 
@@ -178,7 +178,7 @@ Opcode `$03` is not the stop operation. It yields after a programmed stage. Opco
 
 ## Complete sound-event catalog
 
-The catalog contains 20 event-level sounds and 24 distinct score starting addresses. Fifteen single-processor events contribute 15 roots. Player Ship Explosion submits one shared root to both processors. Four other composite events contribute eight distinct roots. The total is `15 + 1 + 8 = 24`.
+The catalog contains 20 event-level sounds and 24 distinct score starting addresses. Fifteen single-processor events contribute 15 roots. Player Ship Explosion submits one shared root to both processors. Four other composite events submit two different roots apiece. The total is `15 + 1 + (4 × 2) = 24`.
 
 `P` denotes primary processor 1, `S` secondary processor 2, and `B` both processors.
 
@@ -217,40 +217,41 @@ The 20-event inventory assigns one canonical route to each audible event. Equiva
 
 | Root | Symbol | Event use | Linear ROM body | Native lifecycle |
 |---:|---|---|---|---|
-| `$1354` | `COINSOUND1` | Coin Insert, S | `$1354-$1369` | `QUIET` -> `emusic` |
-| `$136A` | `COINSOUND2` | Attract Joystick FX, P | `$136A-$136C` | Jump to `$1356`, then `QUIET` |
-| `$2669` | `PLAYER_SHOT_SCORE` | Player Shot, P | `$2669-$2682` | `QUIET` |
-| `$268C` | `PLAYER_EXPLOSION_SCORE` | Player Ship Explosion, P and S | `$268C-$26B2` | `QUIET` |
-| `$26B3` | `PZSCORE` | PZIP, P | `$26B3-$26CE` | `QUIET` |
-| `$26CF` | `ZPSCORE` | ZPIP, P | `$26CF-$26F7` | `QUIET` |
-| `$271E` | `TO1SCORE` | Takeoff, P | `$271E-$2757` | `QUIET` |
-| `$2758` | `TO2SCORE` | Takeoff, S | `$2758-$2791` | `QUIET` |
+| `$1354` | `COINSOUND1` | Coin Insert, S | `$1354-$1369` | Cleared by `QUIET`; post-PC `$136A` |
+| `$136A` | `COINSOUND2` | Attract Joystick FX, P | `$136A-$136C` | Jump to `$1356`; cleared by shared `QUIET`; post-PC `$136A` |
+| `$2669` | `PLAYER_SHOT_SCORE` | Player Shot, P | `$2669-$2682` | Cleared by `QUIET`; post-PC `$2683` |
+| `$268C` | `PLAYER_EXPLOSION_SCORE` | Player Ship Explosion, P and S | `$268C-$26B2` | Both processors cleared by `QUIET`; post-PC `$26B3` |
+| `$26B3` | `PZSCORE` | PZIP, P | `$26B3-$26CE` | Cleared by `QUIET`; post-PC `$26CF` |
+| `$26CF` | `ZPSCORE` | ZPIP, P | `$26CF-$26F7` | Cleared by `QUIET`; post-PC `$26F8` |
+| `$271E` | `TO1SCORE` | Takeoff, P | `$271E-$2757` | Cleared by `QUIET`; post-PC `$2758` |
+| `$2758` | `TO2SCORE` | Takeoff, S | `$2758-$2791` | Cleared by `QUIET`; post-PC `$2792` |
 | `$27A1` | `KBSCORE` | Dive, S | `$27A1-$27D0` | Loops at `$27C0` |
-| `$8115` | `THUMPSCORE` | Invader Thump, S | `$8115-$812D` | Final `YIELD`; output remains latched until replaced or stopped |
-| `$8139` | `IASCORE` | Large Invader, S | `$8139-$8153` | `QUIET` |
+| `$8115` | `THUMPSCORE` | Invader Thump, S | `$8115-$812D` | Final `YIELD`; `MUSPC` remains at post-opcode address `$812E` |
+| `$8139` | `IASCORE` | Large Invader, S | `$8139-$8153` | Final `YIELD`; unlimited ramble leaves `MUSPC=$8153` and the following `QUIET` pending |
 | `$8BA0` | `LZSCORE` | Laser Shot, S | `$8BA0-$8BC1` | Jumps to `KBSCORE`, then loops at `$27C0` |
 | `$9786` | `GASCORE` | Galaxian Attack, S | `$9786-$97BD` | Final ramble remains active; `MUSPC` stays at `$97BE` |
-| `$9F45` | `SPSCORE` | Ship Spiral, S | `$9F45-$9F59` | `QUIET` |
-| `$9F65` | `FBLSCORE` | Fireblast, S | `$9F65-$9F7B` | `QUIET` |
-| `$9F87` | `ST1SCORE` | Star Spiral, P | `$9F87-$9FBB` | `QUIET` |
-| `$9FBC` | `ST2SCORE` | Star Spiral, S | `$9FBC-$9FF0` | `QUIET` |
+| `$9F45` | `SPSCORE` | Ship Spiral, S | `$9F45-$9F59` | Cleared by `QUIET`; post-PC `$9F5A` |
+| `$9F65` | `FBLSCORE` | Fireblast, S | `$9F65-$9F7B` | Cleared by `QUIET`; post-PC `$9F7C` |
+| `$9F87` | `ST1SCORE` | Star Spiral, P | `$9F87-$9FBB` | Cleared by `QUIET`; post-PC `$9FBC` |
+| `$9FBC` | `ST2SCORE` | Star Spiral, S | `$9FBC-$9FF0` | Cleared by `QUIET`; post-PC `$9FF1` |
 | `$A9D7` | `BSFSCORE` | Background Ship, S | `$A9D7-$AA1E` | Tone sequence loops at `$A9E4` |
-| `$AA28` | `SE1SCORE` | Ship Explosion, P | `$AA28-$AA60` | `QUIET` |
-| `$AA61` | `SE2SCORE` | Ship Explosion, S | `$AA61-$AA6B` | Jumps into `SE1SCORE` at `$AA2E`, then `QUIET` |
+| `$AA28` | `SE1SCORE` | Ship Explosion, P | `$AA28-$AA60` | Cleared by `QUIET`; post-PC `$AA61` |
+| `$AA61` | `SE2SCORE` | Ship Explosion, S | `$AA61-$AA6B` | Jumps to `$AA2E`; cleared by shared `QUIET`; post-PC `$AA61` |
 | `$AA7B` | `FBSCORE` | Fireball, S | `$AA7B-$AA9E` | Jumps to `BSFSCORE`, then loops at `$A9E4` |
-| `$AAAA` | `SOSCORE` | Ship Shotoff, P | `$AAAA-$AAD2` | `QUIET` |
-| `$AADE` | `BH1SCORE` | Black Hole Emergence, P | `$AADE-$AB2E` | `QUIET` |
-| `$AB2F` | `BH2SCORE` | Black Hole Emergence, S | `$AB2F-$AB7F` | `QUIET` |
+| `$AAAA` | `SOSCORE` | Ship Shotoff, P | `$AAAA-$AAD2` | Cleared by `QUIET`; post-PC `$AAD3` |
+| `$AADE` | `BH1SCORE` | Black Hole Emergence, P | `$AADE-$AB2E` | Cleared by `QUIET`; post-PC `$AB2F` |
+| `$AB2F` | `BH2SCORE` | Black Hole Emergence, S | `$AB2F-$AB7F` | Cleared by `QUIET`; post-PC `$AB80` |
 
 The 24-root count uses submitted starting addresses. Four roots intentionally share another score's body through `CONTJUMP`: `$136A -> $1356`, `$8BA0 -> $27A1`, `$AA61 -> $AA2E`, and `$AA7B -> $A9D7`.
 
-### Stationary native endpoints
+### Stationary continuous endpoints
 
-Most finite streams reach `QUIET`, which calls `emusic` and installs `ENDMUS`. Native control-flow loops revisit a score address. Two streams follow neither pattern and therefore require exact lifecycle descriptions:
+Finite streams reach `QUIET`, which calls `emusic`, clears `+$05..+$2F`, and then leaves the post-`QUIET` score address in `MUSPC`. Native control-flow loops revisit a score address. Three streams instead settle at one score address while interrupt-time synthesis remains active:
 
 | Root | Final programmed operation | Settled `MUSPC` | Native state |
 |---:|---|---:|---|
-| `$8115` `THUMPSCORE` | `YIELD` at `$812D`; the completed ramp later requests one more interpretation pass | `$812F` | `$812E` is the adjacent TERSE word's `$CF` byte and is rejected as a score opcode; the resulting register state remains latched |
+| `$8115` `THUMPSCORE` | `YIELD` at `$812D` after configuring an unlimited master-oscillator ramp | `$812E` | `$812E` is the adjacent TERSE word's `$CF` byte, but `MST` remains zero and the score interpreter does not fetch it; the ramp and resulting register state remain active until replaced or stopped |
+| `$8139` `IASCORE` | `YIELD` at `$8152` after configuring an unlimited ramble | `$8153` | `$8153` contains `QUIET`, but no duration or limit transition raises `MST` to execute it; the ramble remains active until replaced or stopped |
 | `$9786` `GASCORE` | `YIELD` at `$97BD` after an unlimited final ramble | `$97BE` | The score PC remains stationary while interrupt-time `muscpu` continues the configured ramble |
 
 These addresses describe resident engine behavior. They are not synthetic duration cutoffs.
@@ -361,7 +362,7 @@ BD 10 80 06 80 8C 04 24 03
 
 `VOLMOVIN($0F,$00,$FF,$03); MCVOLS($0F); ABVOLS($FF); MOHITTIN($0F); TONE_C($A8); TONE_B($B2); TONE_A($BD); MASTER($80); RAMP($80,$8C,$04,$24); YIELD`
 
-The stream has no `QUIET`. `YIELD` first leaves `MUSPC=$812E`. When the final timed ramp completes, `MST` rises once more; `$812E` is the `$CF` byte that opens the adjacent TERSE word, so the score interpreter rejects it and settles at `$812F`. The resulting hardware state remains until another start or `emusic` replaces it.
+The stream has no `QUIET`. `RAMP($80,$8C,$04,$24)` enables master-oscillator ramping without loading `LIMCOUNTER`, so the ramp has no programmed completion transition. The final `YIELD` commits `MUSPC=$812E` and clears `MST`. Although `$812E` is the `$CF` byte that opens the adjacent TERSE word, the score interpreter does not fetch it because no timed state raises `MST` again. The ramp and hardware state remain active until another score or `emusic` replaces them.
 
 #### `$8139` `IASCORE` — Large Invader
 
@@ -371,6 +372,8 @@ The stream has no `QUIET`. `YIELD` first leaves `MUSPC=$812E`. When the final ti
 ```
 
 `MASTER($24); RAMBLE($20,$30,$02,$01); LOWMOVIN($12,$FF,$10); HIGHMOVIN($02,$FF,$10); TONE_C($3E); TONE_B($4A); TONE_A($5E); ABVOLS($88); MCVOLS($08); YIELD; QUIET`
+
+The `RAMBLE` operation does not load `LIMCOUNTER`, and neither movement declaration creates a score-state transition when `LIMCOUNTER` is zero. `YIELD` at `$8152` therefore commits `MUSPC=$8153` and clears `MST`. The `$04` byte at `$8153` is a pending `QUIET`, not an executed one. Interrupt-time ramble processing continues until another score or `emusic` replaces it.
 
 ### Mission 3: Attack Fighter
 
@@ -538,7 +541,7 @@ Evidence priority:
 4. Resident interpreter behavior at `OPADDRESSES`, `muscpu`, `musinterp`, `bmusic`, `pmusic`, and `emusic`.
 5. Runtime observation on the English Program-2 ROM under MAME 0.289.
 
-Static verification establishes 20 event identities, 24 distinct submitted score roots, 15 canonical TERSE event words, three canonical self-contained native launchers, two stateful embedded call sites, five two-processor composite events, and two stationary native endpoints. The annotated ASM assembles to the eight documented Program-2 ROM images without byte changes.
+Static verification establishes 20 event identities, 24 distinct submitted score roots, 15 canonical TERSE event words, three canonical self-contained native launchers, two stateful embedded call sites, five two-processor composite events, 17 finite score roots with documented post-`QUIET` PCs, three stationary continuous roots, and four roots that enter two native control-flow loops. The annotated ASM assembles to the eight documented Program-2 ROM images without byte changes.
 
 Primary source scans:
 

@@ -65,11 +65,34 @@
 ;   gorf-h.bin  fe7b863d    5aa8d824814ee1c30eaf0044da78d3aa8220dcaa
 ;
 ;******************************************************************************************
+;   Symbols point to compiled TERSE colon words
+;   Score symbols point to bytecode consumed by the native music interpreter.
+;   Several submit two scores, one to each Astrocade music processor.
 ;
-;   Sound events and score streams.
-;   High-level event symbols point to compiled TERSE colon words.
-;   Score symbols point to bytecode consumed by the native music interpreter. 
-;   Several events submit two scores, one to each Astrocade music processor.
+;     01 Coin Insert             TERSE $136D                    S:$1354
+;     02 Attract Joystick FX     call site $139E                P:$136A
+;     03 Player Shot             native launcher $2AEF          P:$2669
+;     04 Player Ship Explosion   TERSE $26F8                    P:$268C S:$268C
+;     05 PZIP                    TERSE $270C                    P:$26B3
+;     06 ZPIP                    TERSE $2715                    P:$26CF
+;     07 Takeoff                 TERSE $2792                    S:$2758 P:$271E
+;     08 Dive                    native launcher $27D1          S:$27A1
+;     09 Invader Thump           TERSE $812E                    S:$8115
+;     10 Large Invader           TERSE $8154                    S:$8139
+;     11 Laser Shot              call site $9059                S:$8BA0
+;     12 Galaxian Attack         native launcher $97BE          S:$9786
+;     13 Ship Spiral             TERSE $9F5A                    S:$9F45
+;     14 Fireblast               TERSE $9F7C                    S:$9F65
+;     15 Star Spiral             TERSE $9FF1                    P:$9F87 S:$9FBC
+;     16 Background Ship         TERSE $AA1F                    S:$A9D7
+;     17 Ship Explosion          TERSE $AA6C                    S:$AA61 P:$AA28
+;     18 Fireball                TERSE $AA9F                    S:$AA7B
+;     19 Ship Shotoff            TERSE $AAD3                    P:$AAAA
+;     20 Black Hole Emergence    TERSE $AB80                    P:$AADE S:$AB2F
+;
+;   15 TERSE routes, three self-contained native launchers, two
+;   exact submissions at stateful call sites, five two-processor events, and 24 distinct
+;   submitted score roots.
 ;
 PLAYER_SHOT_SOUND         EQU     $2683   ; GORFOS 0186: 1D, primary BMUSIC
 PLAYER_EXPLOSION_SCORE    EQU     $268C   ; GORFOS 0186: 1GSCORE
@@ -85,8 +108,15 @@ TAKEOFF_SOUND             EQU     $2792   ; GORFOS 0188: TO composite event
 ;   Mission 1: Astro Battles / Invaders.
 THUMPSCORE                EQU     $8115   ; INVADERS 0113: background thump score
 INVADER_THUMP_SOUND       EQU     $812E   ; INVADERS 0113: TH
+THUMP_FINAL_YIELD         EQU     $812D   ; Final QUITJUMP opcode
+THUMP_CONTINUOUS_MUSPC    EQU     $812E   ; Post-YIELD PC; unlimited ramp leaves MST clear
 IASCORE                   EQU     $8139   ; INVADERS 0114: large-invader score
 LARGE_INVADER_SOUND       EQU     $8154   ; INVADERS 0114: IA
+LARGE_INVADER_CONTINUOUS_MUSPC EQU $8153 ; Post-YIELD PC; unlimited ramble leaves MST clear
+
+;   Mission 2: Galaxians. GASCORE and its native launcher are defined later.
+GALAXIAN_FINAL_YIELD      EQU     $97BD   ; Final QUITJUMP opcode
+GALAXIAN_CONTINUOUS_MUSPC EQU     $97BE   ; Unlimited final ramble remains active here
 
 ;   Mission 4: Space Warp.
 SPSCORE                   EQU     $9F45   ; SPACE WARP 0110: ship-spiral score
@@ -110,6 +140,7 @@ SHIP_SHOTOFF_SOUND        EQU     $AAD3   ; FLAG SHIP 0113: SO
 BH1SCORE                  EQU     $AADE   ; FLAG SHIP 0114: black-hole primary score
 BH2SCORE                  EQU     $AB2F   ; FLAG SHIP 0114: black-hole secondary score
 BLACK_HOLE_SOUND          EQU     $AB80   ; FLAG SHIP 0114: BH composite event
+
 ;
 ;******************************************************************************************
 ;   COLD START of the game. This section just jumps over the RST $08
@@ -3184,9 +3215,11 @@ limitcount_done:
 ;  EXX, RET,
 ; -->
 ;
-; ENDMUS is the one-byte music opcode/data item at $0B85.  The old raw
-; disassembly rendered its $03 byte as INC BC, which made emusic appear one
-; byte too early.  Existing callers target $0B86, confirming the boundary.
+; ENDMUS is the one-byte idle MUSPC sentinel at $0B85. Its $03 value is the
+; QUITJUMP opcode byte, but emusic installs the address without executing it.
+; A direct emusic call leaves MUSPC at ENDMUS. Final QUIET handling subsequently
+; commits the post-opcode score pointer over MUSPC in musinterp.endprocess.
+; Direct callers establish emusic at $0B86.
 ;##########################################################################################
 ENDMUS:     DB      $03
 
@@ -3252,6 +3285,8 @@ randomnotes:
 ;  A COMPDURATION Y STX, ) 1 ORI, RET,
 ; SUBR CONTJUMP M E MOV, H INX, M D MOV, XCHG, A XRA, RET,
 ; SUBR QUITJUMP ( H DCX, 3 in A ) RET,
+; Opcode $03 yields score interpretation. The interpreter commits the next
+; MUSPC and clears MST; it does not stop or silence the processor.
 ;##########################################################################################
 
 loadtimer: ld      a,(hl)
@@ -3267,13 +3302,19 @@ contjump:  ld      e,(hl)
             xor     a
             ret
 
-quitjump:  ret
+quitjump:  ret                         ; A remains $03 from opcode dispatch
 
 ;##########################################################################################
 ; SUBR QUITYET? ( QUIET ) MULTIPLE Y DCRX,
 ;  0<>, IF, STARTPC Y L LDX, STARTPC 1+ Y H LDX, A XRA,
 ;  ELSE, Y PUSHX, EXX, D POP, emusic CALL, 1 ORI, THEN, RET,
 ; -->
+;
+; On the final repeat, emusic writes MUSPC=ENDMUS, clears IY+$05 through
+; IY+$2F, and silences the selected hardware block. quityet then returns to
+; endprocess with HL already advanced past QUIET. endprocess commits that HL
+; value to MUSPC. The stable completion signature is the cleared +$05..+$2F
+; range, not MUSPC=ENDMUS; STARTPC and SOUNDBOX remain intact.
 ;##########################################################################################
 quityet:   dec     (iy+$07)
             jp      z,$0BE7
@@ -3418,8 +3459,7 @@ abvolin:    rrca
 ; { BLOCK 0076 }
 ; ( OPCODES 0C-0F )
 ;
-; The source comments in the earlier disassembly were displaced by one routine.
-; Block 0079's OPADDRESSES table fixes the entry points unambiguously:
+; Block 0079's OPADDRESSES table establishes these entry points:
 ;   $0C69 LOWMOVIN', $0C7D HIGHMOVIN', $0C91 TBMOVIN', $0CA5 NOMOVIN'.
 ;##########################################################################################
 
@@ -3701,15 +3741,14 @@ musicin:    ret
 
 ;******************************************************************************************
 ; OPADDRESSES is the music interpreter's opcode vector table from Block 0079.
-; The 56 bytes here were previously disassembled as plausible-looking Z80 instructions,
-; but they are 28 little-endian routine pointers for opcodes $00 through $1B.
+; These 56 bytes are 28 little-endian routine pointers for opcodes $00 through $1B.
 ;******************************************************************************************
 OPADDRESSES:
             DW      randomnotes         ; $00
             DW      loadtimer           ; $01
             DW      contjump            ; $02
-            DW      quitjump            ; $03
-            DW      quityet             ; $04
+            DW      quitjump            ; $03 YIELD: commit next MUSPC and return
+            DW      quityet             ; $04 QUIET: repeat or stop through emusic
             DW      ramblin             ; $05
             DW      rampin              ; $06
             DW      musicin             ; $07
@@ -3992,10 +4031,10 @@ process_next_opcode:
 
             jp      endprocess
 process_bad_opcode:
-            or      $01                 ; Invalid opcode terminates this interpreter pass
+            or      $01                 ; Reject byte, commit the following MUSPC, clear MST
 endprocess: or      a
             jp      z,process_next_opcode
-            ld      (iy+$00),l          ; Commit MUSPC returned by the opcode handler
+            ld      (iy+$00),l          ; Also commits the post-QUIET PC after emusic clears state
             ld      (iy+$01),h
 musend:     ld      (iy+$2f),$00        ; MST=0: timed synthesis updates may run
             ret
@@ -5957,8 +5996,7 @@ WPNOZ:      ld      hl,$D00B
 ; ZEROSCORE - ( ZERO QUAD BYTES OF MEMORY )
 ; Description & Context: High-level TERSE word. Clears 3 bytes of memory at the
 ;                        address provided on the stack. Specifically used to zero
-;                        out the 3-byte BCD scores for the players. Previously
-;                        labeled as _P0Q.
+;                        out the 3-byte BCD scores for the players.
 ;******************************************************************************************
 _ZEROSCORE:  exx
             pop     hl
@@ -12430,7 +12468,7 @@ ASTRO_BATTLES_INVADER_BULLET_2:
         DB      $40,$00                        ; 1 . . . . . . .
         DB      $55,$54                        ; 1 1 1 1 1 1 1 .
         DB      $40,$00                        ; 1 . . . . . . .
-
+; THUMPSCORE $8115-$812D ends in YIELD; its unlimited ramp holds MUSPC at $812E.
             ld      a,(de)
             rrca
             nop
@@ -12461,7 +12499,7 @@ ASTRO_BATTLES_INVADER_BULLET_2:
             ld      a,e
             djnz    $8199
             nop
-            djnz    $815F
+            djnz    $815F             ; IASCORE begins: MASTER $24
             dec     b
             jr      nz,$816E
             ld      (bc),a
@@ -12477,8 +12515,8 @@ ASTRO_BATTLES_INVADER_BULLET_2:
             adc     a,b
             dec     d
             ex      af,af'
-            inc     bc
-            inc     b
+            inc     bc                ; IASCORE final YIELD opcode $03
+            inc     b                 ; Pending QUIET $04; unlimited ramble keeps MST clear
             rst     $08
             ld      l,l
             nop
@@ -16376,6 +16414,8 @@ GASCORE     EQU     $9786               ; GALAXIANS 0157: attack score
 
 ; ----> play_galaxian_attack_sound  Self-contained GA sound launcher.
 ;                                    BMUSIC preserves a priority score on processor 2.
+;       GASCORE ends with QUITJUMP at $97BD after configuring an unlimited final ramble.
+;       MUSPC remains $97BE while interrupt-time synthesis continues that ramble.
 play_galaxian_attack_sound:
             ld      hl,GASCORE
             ld      iy,$D0E1

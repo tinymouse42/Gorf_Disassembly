@@ -1,6 +1,10 @@
 # Gorf Sound Browser
 
-Playback follows one canonical game route per event:
+The complete sound-engine analysis, event catalog, score programs, route provenance, and lifecycle classification are maintained in [`SOUND_MAP.md`](SOUND_MAP.md). 
+
+This README covers the Lua Sound Browser tool: startup, native takeover, injected Z80, controls, monitoring, logging, and validation.
+
+The tool does not patch ROM, write Astrocade sound registers from Lua, synthesize replacement effects, or replay captured register streams.
 
 | Route class | Entries | Tool action |
 |---|---:|---|
@@ -8,21 +12,13 @@ Playback follows one canonical game route per event:
 | Self-contained native launcher | 3 | Call the release-ROM gameplay launcher |
 | Exact engine submission | 2 | Submit the original score to the original processor and engine entry without entering a stateful game routine |
 
-The event names, addresses, processor assignments, score roots, and route selection are defined in `SOUND_MAP.md` and are not duplicated here.
-
-## Requirements
-
-- MAME 0.289 or later with Lua enabled
-- English `gorf` Program 2 ROM set
-- `gorf_sound_browser.lua`
-
 Run the tool as an autoboot script:
 
 ```text
 mame gorf -autoboot_script gorf_sound_browser.lua
 ```
 
-Gorf boots normally. The tool **waits 12 seconds**, validates the resident ROM, then replaces the foreground game loop with the browser controller.
+Gorf boots normally. The tool waits 12 seconds, validates the resident ROM, then replaces the foreground game loop with the browser controller.
 
 ## Native takeover model
 
@@ -37,22 +33,20 @@ The Z80 remains responsible for display and sound execution:
 - Interrupt-time `muscpus` advances synthesis.
 - The injected foreground loop calls `busaround` to advance score bytecode.
 
-The tool does not patch ROM, write Astrocade sound registers from Lua, synthesize replacement effects, or replay captured register streams.
-
 ## Injected work-RAM layout
 
 | Address | Use |
 |---:|---|
 | `$D400-$D407` | Resident interrupt/service loop |
-| `$D420-$D51F` | Generated native menu renderer and string loop |
-| `$D520-$D6BF` | Generated menu text |
+| `$D420-$D55F` | Generated native menu renderer, string loop, and dash-glyph path |
+| `$D560-$D6BF` | Generated menu text and dash bitmap |
 | `$D6C0-$D6C3` | Two-cell TERSE thread |
 | `$D6D0-$D6D3` | TERSE return target |
 | `$D6F0` | TERSE return-stack base |
 | `$D700-$D79F` | Generated play or stop launcher |
 | `$D7E0` | Native call stack and TERSE parameter-stack pointer |
 
-The generator rejects a menu whose code reaches `$D520`, text that reaches `$D6C0`, or a launcher that reaches `$D7A0`. These bounds keep the display program, text, TERSE state, launcher, and stack regions separate.
+The generator treats `$D560`, `$D6C0`, and `$D7A0` as exclusive limits. A generated object may end at `$D55F`, `$D6BF`, or `$D79F`; it may not write the following byte. Menu strings, the dash bitmap, and launcher bodies are sized before any of their bytes are written. Static layout validation also checks the idle loop, TERSE thread, return target, return-stack base, launcher region, and 64-byte call-stack guard before takeover.
 
 ## Injected foreground loop
 
@@ -137,7 +131,9 @@ The two stateful call sites use this generated form:
 
 The tool scans Program-2 ROM for the resident `drawchar` routine by instruction signature. It does not assume the address until the signature is found.
 
-For each redraw, Lua generates a Z80 display routine at `$D420` and null-terminated strings at `$D520`. The routine calls the resident character renderer once per character and returns to `$D401`. Video RAM is cleared only when takeover begins.
+For each redraw, Lua generates a Z80 display routine at `$D420` and null-terminated strings at `$D560`. The title begins at the left edge, while the version is drawn independently in yellow at the right edge. The status row contains only current execution state; it does not display the visible window range or catalog size.
+
+Gorf's resident character table has no hyphen. A six-column dash bitmap in work RAM is drawn through Gorf's `RELABS` vector and native `write` routine. The Up and Down controls use native text, and the ROM character table remains unchanged.
 
 The screen uses the native Gorf character set and palette attributes:
 
@@ -153,32 +149,36 @@ Each row carries a `P`, `S`, or `B` processor marker. The marker is a compact di
 |---|---|
 | Up / Down | Move selection through the full catalog; hold for repeat |
 | Fire | Play the selected event; press again to stop it |
-| 2P Start | Start play-all; press again to request stop after the current event |
+| 2P Start | Start play-all; press again to stop the current event and cancel play-all immediately |
 | 1P Start | Exit MAME |
 
-Directional repeat begins after 15 frames and repeats every four frames. Left and Right have no browser function.
+The screen presents these controls as `UP DOWN SELECT - FIRE PLAY` and `1P EXIT - 2P PLAY ALL`. Directional repeat begins after 15 frames and repeats every four frames. Left and Right have no browser function. Cursor movement redraws the native menu without printing selection traffic to the Lua console; explicit console selections, takeover, and playback remain logged.
 
 ## Playback state and completion
 
-The catalog declares every processor expected to run for an event. The monitor creates one track per declared processor and reads the native work array each frame.
+The catalog declares every processor and score root expected to run for an event. The monitor creates one track per declared processor. Monitoring remains disarmed until the injected launcher returns to the foreground service loop and the processor's `STARTPC` matches the declared score root. This prevents the prior event's work-array state from appearing as the first transition of a new event.
 
-A finite processor track completes only after:
+Normal finite completion is the exact reset footprint produced by `emusic`: every work byte from `+$05` through `+$2F` is zero. This range includes `MULTIPLE`, `PRIORITY`, all motion state, `NOTETIMER`, and `MST`. `STARTPC` and `SOUNDBOX` are outside the cleared range and remain available for identity and diagnostics.
 
-1. `MUSPC` leaves `ENDMUS` at `$0B85`; and
-2. `MUSPC` later returns to `$0B85` through native `emusic`.
+`MUSPC==$0B85` is not required for normal completion. On the final `QUIET`, Gorf's `quityet` handler calls `emusic`, but `musinterp.endprocess` then commits the score pointer already advanced past the `$04` opcode. The stable postcondition is a cleared processor with `MUSPC` at the byte after `QUIET`. `SOUND_MAP.md` records that post-PC for all 17 finite score roots.
 
-This two-step rule prevents the initial idle state from being mistaken for immediate completion. An event using both processors completes only after both tracks complete.
+An event using both processors completes only after both declared work arrays reach an authoritative completion state. Clearing one array cannot end a composite event while the other remains active.
 
-For each track, the tool records the last `MUSPC`, transition count, visited addresses, completion state, and detected loop address. A repeated nonconsecutive `MUSPC`, separated by at least two transition counts, marks a native control-flow loop. Manual playback leaves that loop active until Fire or `gsstop()`. Play-all stops a detected loop through the native stop launcher and advances.
+For each track, the tool records the last `MUSPC`, transition count, visited addresses, completion state, and detected loop address. A repeated nonconsecutive `MUSPC`, separated by at least two transition counts, marks a native control-flow loop. Manual playback leaves nonterminating scores active until Fire or `gsstop()`.
 
-Two ROM streams have stationary endpoints that cannot be inferred from the general return-to-`ENDMUS` or repeated-PC rules. Their component declarations carry exact endpoint policies:
+Three ROM streams settle at stationary continuous endpoints that cannot be inferred from the general return-to-`ENDMUS` or repeated-PC rules. Their component declarations carry exact endpoint policies:
 
-| Event | Processor | Endpoint | Classification | Browser action |
-|---|---|---:|---|---|
-| Invader Thump | Secondary | `$812F` | Terminal held state | Mark the processor complete; play-all stops it through the native stop launcher and advances |
-| Galaxian Attack | Secondary | `$97BE` | Continuous final ramble | Mark the processor continuous; manual playback remains active, while play-all stops it through the native stop launcher and advances |
+| Event | Processor | Endpoint | Native state |
+|---|---|---:|---|
+| Invader Thump | Secondary | `$812E` | Unlimited master-oscillator ramp remains active after the final `YIELD` |
+| Large Invader | Secondary | `$8153` | Unlimited ramble remains active; the adjacent `QUIET` is not executed |
+| Galaxian Attack | Secondary | `$97BE` | Unlimited final ramble remains active after the final `YIELD` |
 
-The endpoint check requires the declared `MUSPC`, a processor that has left `ENDMUS`, and `MST=0`. No wall-clock timeout participates in completion. Timed duration, ramp, note, and ramble stages therefore run to the state established by the ROM score.
+The endpoint check requires the declared `MUSPC`, a matching `STARTPC`, a completed native launcher, and `MST=0`. No wall-clock timeout participates in finite-score completion. Timed duration, ramp, note, and ramble stages therefore run to the state established by the ROM score.
+
+Play-all applies a separate browser policy to nonterminating scores. A detected loop or stationary continuous endpoint receives at least 2.0 seconds from submission before the tool calls native `emusic` and advances. If native progression takes longer than two seconds to establish the loop, play-all stops when that loop is detected. Manual playback has no duration limit. Pressing 2P Start or calling `gsstop()` stops the current processor through the native stop launcher and cancels play-all immediately.
+
+The UI status begins at `PLAY nn STEP 00` and advances once for every observed processor score-PC transition. Natural finite completion leaves `DONE nn STEPS ss` on screen. Completed playback is removed immediately, so the first Fire press after `DONE` starts the selected event again; it is not consumed as a stop request.
 
 ## Console commands
 
@@ -189,32 +189,34 @@ The endpoint check requires the declared `MUSPC`, a processor that has left `END
 | `gsplay(n)` | Select and play item `n` |
 | `gsinfo()` | Print the selected event, route, components, and source label |
 | `gsaudit()` | Dump selected ROM bytes and both processor states |
-| `gsstate()` | Dump `MUSPC`, `STARTPC`, `SOUNDBOX`, `MULTIPLE`, `PRIORITY`, `NOTETIMER`, `MST`, and `MUSICFLAG` |
+| `gsstate()` | Dump `MUSPC`, `STARTPC`, `SOUNDBOX`, `MULTIPLE`, `PRIORITY`, `NOTETIMER`, `MST`, cleared-state status, the first active work byte, and `MUSICFLAG` |
 | `gsdiag()` | Dump the fixed dispatcher and music-engine anchors with ROM bytes |
 | `gstrace()` / `gstrace(true\|false)` | Toggle or set score-transition logging; enabled by default |
 | `gsall()` | Start play-all |
-| `gsstop()` | Stop the current event or request play-all stop |
+| `gsstop()` | Stop the current event or cancel play-all immediately |
 | `gswav()` / `gswav(true\|false)` | Toggle or set per-event WAV recording |
 | `gsexit()` | Exit MAME |
 | `gshelp()` | Print the command list |
 
 ## Logging
 
-Selection logging reports the item number, event name, canonical route, source label, processor set, and every declared score component.
+Explicit selection logging is one line containing the item number, processor marker, and event name. Directional navigation is silent.
 
-Playback logging reports:
+Each playback block begins after a blank console line. The `PLAY` line contains the two-digit item number without a `/20` suffix. The following indented lines report:
 
 - request source: manual, console, or play-all;
-- both processor states before launch;
+- canonical route and source label;
+- a compact `PRE-RESET` snapshot of both processors' `MUSPC`, `PRIORITY`, and `MST` immediately before the generated launcher resets them through `emusic`;
 - every score submission declared for the event;
-- each observed `MUSPC` transition;
+- the point at which each expected `STARTPC` is accepted and monitoring becomes armed;
+- each observed `MUSPC` transition and aggregate event step number;
 - current opcode and decoded opcode name;
-- `PRIORITY`, `MULTIPLE`, `MST`, and `NOTETIMER`;
-- per-processor native completion;
-- detected loops, continuous endpoints, terminal stationary endpoints, and their addresses;
+- `PRIORITY`, `MULTIPLE`, `MST`, `NOTETIMER`, and cleared-state classification;
+- per-processor `ENDMUS`, reset-footprint, loop, or stationary-continuous classification;
+- detected loops, continuous endpoints, their addresses, and the play-all audition interval;
 - elapsed time and stop reason.
 
-The trace reads game state only. It does not capture, replay, or alter sound-register writes.
+`PRE-RESET` records residue or an active score that the launcher is about to replace. The complete work-array dump remains available through `gsstate()` and `gsaudit()`. The trace reads game state only. It does not capture, replay, or alter sound-register writes.
 
 ## WAV recording
 
@@ -232,9 +234,9 @@ Takeover is refused unless all of the following checks pass:
 
 - English Program-2 `SPK_INSERT` signature at `$115D`;
 - resident `drawchar` instruction signature;
+- native Pattern Board writer signature at `$062E` and initialized `RELABS` vector at `$D080`;
 - `ENDMUS` byte `$03` at `$0B85`;
 - opening bytes of score `$1354`;
-- `COINSOUND2` bytes `02 56 13` at `$136A`;
 - exactly 20 unique catalog IDs;
 - valid route and component declarations for every entry;
 - exactly 15 TERSE routes, three native-launcher routes, two exact-submission routes, and five composite events;
@@ -242,7 +244,8 @@ Takeover is refused unless all of the following checks pass:
 - `$21` entry signature for every selected native launcher;
 - valid `$00-$1B` opening opcode at every declared score root;
 - exactly 24 distinct declared score roots;
-- exact stationary endpoint declarations for Invader Thump `$812F` (`terminal`) and Galaxian Attack `$97BE` (`continuous`).
+- exact stationary continuous endpoint declarations for Invader Thump `$812E`, Large Invader `$8153`, and Galaxian Attack `$97BE`;
+- generated work-RAM ordering, exclusive region limits, the 64-byte call-stack guard, and the `emusic` cleared range `+$05..+$2F`.
 
 These checks bind the tool to the intended Program-2 image and reject incomplete or mismatched catalogs before foreground takeover.
 
@@ -252,9 +255,12 @@ The delivered source passed:
 
 - Lua syntax validation with `texluac -p`;
 - static catalog validation for 20 IDs, 15 TERSE routes, three native routes, two exact submissions, and 24 score roots;
-- stationary-endpoint regression checks for Invader Thump `$812F` and Galaxian Attack `$97BE`;
-- work-RAM region checks for generated code, strings, TERSE state, and stack separation;
+- stationary-continuous regression checks for Invader Thump `$812E`, Large Invader `$8153`, and Galaxian Attack `$97BE`;
+- two-second play-all audition checks for items 09 and 10, advancement through item 11, and immediate play-all cancellation;
+- simulated reset-footprint completion, immediate first-Fire replay, two-processor completion, and play-all advancement;
+- pre-write and observed-write RAM-bound checks for generated code, strings, the dash bitmap, TERSE state, and stack separation;
+- launch-arming checks that reject stale pre-reset `MUSPC` state;
 - ZMAC assembly of the annotated Program-2 disassembly without errors;
 - byte identity against all eight documented Program-2 ROM SHA-1 values.
 
-Runtime test procedure: exercise individual playback, Fire stop, all five two-processor events, logging, WAV capture, both stationary endpoint classifications, and one complete `gsall()` pass through all 20 events.
+Runtime test procedure: exercise individual playback, Fire stop, all five two-processor events, logging, WAV capture, all three stationary continuous classifications, immediate 2P play-all cancellation, and one complete `gsall()` pass through all 20 events.
