@@ -1,6 +1,6 @@
 # Gorf Sound Browser
 
-The complete sound-engine analysis, event catalog, score programs, route provenance, and lifecycle classification are maintained in [`SOUND_MAP.md`](SOUND_MAP.md). 
+The complete sound-engine analysis, event catalog, score programs, route provenance, and lifecycle classification are maintained in [`SOUND_MAP.md`](../../docs/SOUND_MAP.md). 
 
 This README covers the Lua Sound Browser tool: startup, native takeover, injected Z80, controls, monitoring, logging, and validation.
 

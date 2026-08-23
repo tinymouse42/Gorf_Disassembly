@@ -2,6 +2,9 @@
 
 `gorf_speech_browser.lua` is a MAME Lua utility for browsing, testing, tracing, and capturing Gorf Program 2 speech to WAV.
 
+The complete speech-engine analysis, catalog, are maintained in [`SPEECH_MAP.md`](../../docs/SPEECH_MAP.md). 
+
+
 Gorf boots normally. After the resident speech path is complete, the browser takes over foreground execution from work RAM while leaving the game's interrupt-driven sound and SC-01 service active. The browser renders through Gorf's native `drawchar`/`CHRTBL` path and Astrocade Magic RAM; no MAME overlay is used.
 
 The browser supports resident English speech and the active Program 2 X11 language ROM. Current German, French, and Klingon X11 builds use the same 36 resident speech keys and are resolved through their loaded translation tables.
