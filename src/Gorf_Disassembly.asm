@@ -65,6 +65,84 @@
 ;   gorf-h.bin  fe7b863d    5aa8d824814ee1c30eaf0044da78d3aa8220dcaa
 ;
 ;******************************************************************************************
+;   Symbols point to compiled TERSE colon words
+;   Score symbols point to bytecode consumed by the native music interpreter.
+;   Several submit two scores, one to each Astrocade music processor.
+;
+;     01 Coin Insert             TERSE $136D                    S:$1354
+;     02 Attract Joystick FX     call site $139E                P:$136A
+;     03 Player Shot             native launcher $2AEF          P:$2669
+;     04 Player Ship Explosion   TERSE $26F8                    P:$268C S:$268C
+;     05 PZIP                    TERSE $270C                    P:$26B3
+;     06 ZPIP                    TERSE $2715                    P:$26CF
+;     07 Takeoff                 TERSE $2792                    S:$2758 P:$271E
+;     08 Dive                    native launcher $27D1          S:$27A1
+;     09 Invader Thump           TERSE $812E                    S:$8115
+;     10 Large Invader           TERSE $8154                    S:$8139
+;     11 Laser Shot              call site $9059                S:$8BA0
+;     12 Galaxian Attack         native launcher $97BE          S:$9786
+;     13 Ship Spiral             TERSE $9F5A                    S:$9F45
+;     14 Fireblast               TERSE $9F7C                    S:$9F65
+;     15 Star Spiral             TERSE $9FF1                    P:$9F87 S:$9FBC
+;     16 Background Ship         TERSE $AA1F                    S:$A9D7
+;     17 Ship Explosion          TERSE $AA6C                    S:$AA61 P:$AA28
+;     18 Fireball                TERSE $AA9F                    S:$AA7B
+;     19 Ship Shotoff            TERSE $AAD3                    P:$AAAA
+;     20 Black Hole Emergence    TERSE $AB80                    P:$AADE S:$AB2F
+;
+;   15 TERSE routes, three self-contained native launchers, two
+;   exact submissions at stateful call sites, five two-processor events, and 24 distinct
+;   submitted score roots.
+;
+PLAYER_SHOT_SOUND         EQU     $2683   ; GORFOS 0186: 1D, primary BMUSIC
+PLAYER_EXPLOSION_SCORE    EQU     $268C   ; GORFOS 0186: 1GSCORE
+PLAYER_EXPLOSION_SOUND    EQU     $26F8   ; GORFOS 0186: 1G, primary then secondary
+PZSCORE                   EQU     $26B3   ; GORFOS 0187: PZIP score
+PZIP_SOUND                EQU     $270C   ; GORFOS 0187: PZ
+ZPSCORE                   EQU     $26CF   ; GORFOS 0187: ZPIP score
+ZPIP_SOUND                EQU     $2715   ; GORFOS 0187: ZP
+TO1SCORE                  EQU     $271E   ; GORFOS 0188: takeoff primary score
+TO2SCORE                  EQU     $2758   ; GORFOS 0188: takeoff secondary score
+TAKEOFF_SOUND             EQU     $2792   ; GORFOS 0188: TO composite event
+
+;   Mission 1: Astro Battles / Invaders.
+THUMPSCORE                EQU     $8115   ; INVADERS 0113: background thump score
+INVADER_THUMP_SOUND       EQU     $812E   ; INVADERS 0113: TH
+THUMP_FINAL_YIELD         EQU     $812D   ; Final QUITJUMP opcode
+THUMP_CONTINUOUS_MUSPC    EQU     $812E   ; Post-YIELD PC; unlimited ramp leaves MST clear
+IASCORE                   EQU     $8139   ; INVADERS 0114: large-invader score
+LARGE_INVADER_SOUND       EQU     $8154   ; INVADERS 0114: IA
+LARGE_INVADER_CONTINUOUS_MUSPC EQU $8153 ; Post-YIELD PC; unlimited ramble leaves MST clear
+
+;   Mission 2: Galaxians. GASCORE and its native launcher are defined later.
+GALAXIAN_FINAL_YIELD      EQU     $97BD   ; Final QUITJUMP opcode
+GALAXIAN_CONTINUOUS_MUSPC EQU     $97BE   ; Unlimited final ramble remains active here
+
+;   Mission 4: Space Warp.
+SPSCORE                   EQU     $9F45   ; SPACE WARP 0110: ship-spiral score
+SHIP_SPIRAL_SOUND         EQU     $9F5A   ; SPACE WARP 0110: SP
+FBLSCORE                  EQU     $9F65   ; SPACE WARP 0110: fireblast score
+FIREBLAST_SOUND           EQU     $9F7C   ; SPACE WARP 0110: FBL
+ST1SCORE                  EQU     $9F87   ; SPACE WARP 0111: star-spiral primary score
+ST2SCORE                  EQU     $9FBC   ; SPACE WARP 0111: star-spiral secondary score
+STAR_SPIRAL_SOUND         EQU     $9FF1   ; SPACE WARP 0111: ST composite event
+
+;   Mission 5: Flag Ship.
+BSFSCORE                  EQU     $A9D7   ; FLAG SHIP 0111: background-ship score
+BACKGROUND_SHIP_SOUND     EQU     $AA1F   ; FLAG SHIP 0111: BSF
+SE1SCORE                  EQU     $AA28   ; FLAG SHIP 0112: ship-explosion primary score
+SE2SCORE                  EQU     $AA61   ; FLAG SHIP 0112: ship-explosion secondary score
+SHIP_EXPLOSION_SOUND      EQU     $AA6C   ; FLAG SHIP 0112: SE composite event
+FBSCORE                   EQU     $AA7B   ; FLAG SHIP 0113: fireball score
+FIREBALL_SOUND            EQU     $AA9F   ; FLAG SHIP 0113: FBS
+SOSCORE                   EQU     $AAAA   ; FLAG SHIP 0113: ship-shotoff score
+SHIP_SHOTOFF_SOUND        EQU     $AAD3   ; FLAG SHIP 0113: SO
+BH1SCORE                  EQU     $AADE   ; FLAG SHIP 0114: black-hole primary score
+BH2SCORE                  EQU     $AB2F   ; FLAG SHIP 0114: black-hole secondary score
+BLACK_HOLE_SOUND          EQU     $AB80   ; FLAG SHIP 0114: BH composite event
+
+;
+;******************************************************************************************
 ;   COLD START of the game. This section just jumps over the RST $08
 ;   which hold _ENTER for the Terse engine.
 ;******************************************************************************************
@@ -3137,9 +3215,11 @@ limitcount_done:
 ;  EXX, RET,
 ; -->
 ;
-; ENDMUS is the one-byte music opcode/data item at $0B85.  The old raw
-; disassembly rendered its $03 byte as INC BC, which made emusic appear one
-; byte too early.  Existing callers target $0B86, confirming the boundary.
+; ENDMUS is the one-byte idle MUSPC sentinel at $0B85. Its $03 value is the
+; QUITJUMP opcode byte, but emusic installs the address without executing it.
+; A direct emusic call leaves MUSPC at ENDMUS. Final QUIET handling subsequently
+; commits the post-opcode score pointer over MUSPC in musinterp.endprocess.
+; Direct callers establish emusic at $0B86.
 ;##########################################################################################
 ENDMUS:     DB      $03
 
@@ -3205,6 +3285,8 @@ randomnotes:
 ;  A COMPDURATION Y STX, ) 1 ORI, RET,
 ; SUBR CONTJUMP M E MOV, H INX, M D MOV, XCHG, A XRA, RET,
 ; SUBR QUITJUMP ( H DCX, 3 in A ) RET,
+; Opcode $03 yields score interpretation. The interpreter commits the next
+; MUSPC and clears MST; it does not stop or silence the processor.
 ;##########################################################################################
 
 loadtimer: ld      a,(hl)
@@ -3220,13 +3302,19 @@ contjump:  ld      e,(hl)
             xor     a
             ret
 
-quitjump:  ret
+quitjump:  ret                         ; A remains $03 from opcode dispatch
 
 ;##########################################################################################
 ; SUBR QUITYET? ( QUIET ) MULTIPLE Y DCRX,
 ;  0<>, IF, STARTPC Y L LDX, STARTPC 1+ Y H LDX, A XRA,
 ;  ELSE, Y PUSHX, EXX, D POP, emusic CALL, 1 ORI, THEN, RET,
 ; -->
+;
+; On the final repeat, emusic writes MUSPC=ENDMUS, clears IY+$05 through
+; IY+$2F, and silences the selected hardware block. quityet then returns to
+; endprocess with HL already advanced past QUIET. endprocess commits that HL
+; value to MUSPC. The stable completion signature is the cleared +$05..+$2F
+; range, not MUSPC=ENDMUS; STARTPC and SOUNDBOX remain intact.
 ;##########################################################################################
 quityet:   dec     (iy+$07)
             jp      z,$0BE7
@@ -3371,8 +3459,7 @@ abvolin:    rrca
 ; { BLOCK 0076 }
 ; ( OPCODES 0C-0F )
 ;
-; The source comments in the earlier disassembly were displaced by one routine.
-; Block 0079's OPADDRESSES table fixes the entry points unambiguously:
+; Block 0079's OPADDRESSES table establishes these entry points:
 ;   $0C69 LOWMOVIN', $0C7D HIGHMOVIN', $0C91 TBMOVIN', $0CA5 NOMOVIN'.
 ;##########################################################################################
 
@@ -3507,14 +3594,14 @@ noiseport:  rrca
 ;        M A MOV, H INX, A PANTIMEBASE Y STX,
 ;        A PANTIMER Y STX, FF PANCOUNTER Y MVIX, A XRA, RET, )
 ;##########################################################################################
-soundmovin: ret                         ; Only a ret here
+soundmovin: ret                         ; Stereo pan opcode is disabled in Program 2
 
 ;##########################################################################################
 ;       SUBR PANLIMITCOUNTIN' ( 19 ) RET, -->
 ;       ( M A MOV, H INX, A PANCOUNTER Y STX,
 ;        PANTIMEBASE Y A LDX, A PANTIMER Y STX, A XRA, RET, )
 ;##########################################################################################
-panlimitcountin:    ret                 ; Only a ret here
+panlimitcountin:    ret                 ; Stereo pan-limit opcode is disabled in Program 2
 
 ;##########################################################################################
 ;       { BLOCK 0078 }
@@ -3654,15 +3741,14 @@ musicin:    ret
 
 ;******************************************************************************************
 ; OPADDRESSES is the music interpreter's opcode vector table from Block 0079.
-; The 56 bytes here were previously disassembled as plausible-looking Z80 instructions,
-; but they are 28 little-endian routine pointers for opcodes $00 through $1B.
+; These 56 bytes are 28 little-endian routine pointers for opcodes $00 through $1B.
 ;******************************************************************************************
 OPADDRESSES:
             DW      randomnotes         ; $00
             DW      loadtimer           ; $01
             DW      contjump            ; $02
-            DW      quitjump            ; $03
-            DW      quityet             ; $04
+            DW      quitjump            ; $03 YIELD: commit next MUSPC and return
+            DW      quityet             ; $04 QUIET: repeat or stop through emusic
             DW      ramblin             ; $05
             DW      rampin              ; $06
             DW      musicin             ; $07
@@ -3686,7 +3772,20 @@ OPADDRESSES:
             DW      panlimitcountin     ; $19
             DW      volmovin            ; $1A
             DW      mohittin            ; $1B
-            xor     a
+
+;******************************************************************************************
+; ----> muscpu  Interrupt-time music processor update.
+;
+;               IY selects one of the two 48-byte processor work areas:
+;                   $D0B1 = processor 1 / Astrocade sound ports $10-$17
+;                   $D0E1 = processor 2 / Astrocade sound ports $50-$57
+;
+;               MST (IY+$2F) separates score interpretation from timed synthesis updates.
+;               While MST is clear, this routine advances timers, ramps, modulation, and
+;               noise motion and writes the resulting register values to the selected sound
+;               block. It raises MST when the score interpreter must consume another opcode.
+;******************************************************************************************
+muscpu:     xor     a
             cp      (iy+$2f)
             jp      z,$0D5C
             ret
@@ -3893,23 +3992,28 @@ OPADDRESSES:
             ld      (iy+$17),a
             ret
 
-;*******************************************************************
-
-            ld      a,(iy+$2f)
+;******************************************************************************************
+; ----> musinterp  Score-bytecode interpreter for the processor selected by IY.
+;
+;                  A non-zero MST requests score processing. MUSPC is loaded into HL and
+;                  opcodes $00-$1B dispatch through OPADDRESSES. Handlers returning zero
+;                  continue immediately with the next opcode; a non-zero return commits
+;                  MUSPC, clears MST, and returns control to the timed music processor.
+;******************************************************************************************
+musinterp:  ld      a,(iy+$2f)
             or      a
-            jp      nz,$0F30
+            jp      nz,process
             ret
 
-;*******************************************************************
-
-            ld      l,(iy+$00)
+process:    ld      l,(iy+$00)
             ld      h,(iy+$01)
+process_next_opcode:
             ld      a,(hl)
             inc     hl
-            cp      $1C
-            jp      nc,$0F53
+            cp      $1C                 ; Valid score opcodes are $00-$1B
+            jp      nc,process_bad_opcode
             exx
-            ld      hl,$0F55
+            ld      hl,endprocess
             push    hl
             ld      hl,OPADDRESSES
             rlca
@@ -3925,91 +4029,106 @@ OPADDRESSES:
 
 ;*******************************************************************
 
-            jp      $0F55
-            or      $01
-            or      a
-            jp      z,$0F36
-            ld      (iy+$00),l
+            jp      endprocess
+process_bad_opcode:
+            or      $01                 ; Reject byte, commit the following MUSPC, clear MST
+endprocess: or      a
+            jp      z,process_next_opcode
+            ld      (iy+$00),l          ; Also commits the post-QUIET PC after emusic clears state
             ld      (iy+$01),h
-            ld      (iy+$2f),$00
+musend:     ld      (iy+$2f),$00        ; MST=0: timed synthesis updates may run
             ret
 
-;*******************************************************************
-
-            ld      a,(MUSICFLAG)
+;******************************************************************************************
+; ----> muscpus  Run timed synthesis for both Astrocade sound blocks.
+;                MUSICFLAG gates the complete music/sound sequencer.
+;******************************************************************************************
+muscpus:    ld      a,(MUSICFLAG)
             or      a
-            jp      z,$0F7D
+            jp      z,muscpus_done
             push    iy
-            ld      iy,$D0B1
-            call    $0D54
-            ld      iy,$D0E1
-            call    $0D54
+            ld      iy,$D0B1            ; Processor 1 -> ports $10-$17
+            call    muscpu
+            ld      iy,$D0E1            ; Processor 2 -> ports $50-$57
+            call    muscpu
             pop     iy
+muscpus_done:
             ret
 
-;*******************************************************************
-; Source name recovered from Block 0248: busaround.
-
+;******************************************************************************************
+; ----> busaround  Advance pending score-bytecode work for both music processors.
+;                  Each musinterp call runs only when that processor's MST is non-zero.
+;******************************************************************************************
 busaround:  ld      a,(MUSICFLAG)
             or      a
-            jp      z,$0F97
+            jp      z,busaround_done
             push    iy
-            ld      iy,$D0B1
-            call    $0F28
-            ld      iy,$D0E1
-            call    $0F28
+            ld      iy,$D0B1            ; Processor 1 score interpreter
+            call    musinterp
+            ld      iy,$D0E1            ; Processor 2 score interpreter
+            call    musinterp
             pop     iy
+busaround_done:
             ret
 
-;********************************************************************
-
-            push    bc
-            call    $0F7E
+;******************************************************************************************
+; ----> BMS     TERSE CODE word for background music score processing.
+;******************************************************************************************
+_BMS:       push    bc
+            call    busaround
             pop     bc
             DW      _DSPATCH
 
-;********************************************************************
-            ld      (iy+$00),l
+;******************************************************************************************
+; ----> loadpc  Install a new score address as both MUSPC and STARTPC.
+;******************************************************************************************
+loadpc:     ld      (iy+$00),l
             ld      (iy+$02),l
             ld      (iy+$01),h
             ld      (iy+$03),h
             ret
 
 ;*******************************************************************
-; Low-level music control SUBRs used by the CODE wrappers below.
-; Source names are bmusic, pmusic, mmusic, and mpmusic.
+; Music score start controls.
+;
+; bmusic / mmusic start only when PRIORITY (IY+$08) is clear. pmusic / mpmusic
+; clear the selected processor first, then install the new score as priority. The m*
+; forms take MULTIPLE in E; the other forms set MULTIPLE=1. Successful starts finish
+; through loadpc, keeping MUSPC and STARTPC synchronized.
 
-bmusic:     ld      a,(iy+$08)
+bmusic:     ld      a,(iy+$08)          ; PRIORITY
             or      a
-            jp      nz,$0FC1
-            ld      (iy+$2f),$01
-            ld      (iy+$2e),a
+            jp      nz,bmusic_done      ; Do not replace a priority score
+            ld      (iy+$2f),$01        ; MST: request score interpretation
+            ld      (iy+$2e),a          ; NOTETIMER = 0
             inc     a
-            ld      (iy+$07),a
-            jp      $0F9F
+            ld      (iy+$07),a          ; MULTIPLE = 1
+            jp      loadpc
+bmusic_done:
             ret
 
-pmusic:     ld      (iy+$2f),$01
+pmusic:     ld      (iy+$2f),$01        ; Hold timed updates during reinitialization
             push    iy
             exx
             pop     de
             call    emusic
             ld      a,$01
-            ld      (iy+$2f),a
-            ld      (iy+$07),a
-            ld      (iy+$08),a
-            jp      $0F9F
+            ld      (iy+$2f),a          ; MST = 1: interpret the new score
+            ld      (iy+$07),a          ; MULTIPLE = 1
+            ld      (iy+$08),a          ; PRIORITY = 1
+            jp      loadpc
 
-mmusic:     ld      a,(iy+$08)
+mmusic:     ld      a,(iy+$08)          ; PRIORITY
             or      a
-            jp      nz,$0FEF
-            ld      (iy+$2f),$01
-            ld      (iy+$2e),a
-            ld      (iy+$07),e
-            jp      $0F9F
+            jp      nz,mmusic_done      ; Do not replace a priority score
+            ld      (iy+$2f),$01        ; MST: request score interpretation
+            ld      (iy+$2e),a          ; NOTETIMER = 0
+            ld      (iy+$07),e          ; MULTIPLE supplied by caller
+            jp      loadpc
+mmusic_done:
             ret
 
-mpmusic:    ld      (iy+$2f),$01
+mpmusic:    ld      (iy+$2f),$01        ; Hold timed updates during reinitialization
             push    iy
             exx
             pop     de
@@ -4018,18 +4137,18 @@ mpmusic:    ld      (iy+$2f),$01
             ld      (iy+$2f),a
             ld      (iy+$08),a
             ld      (iy+$07),e
-            jp      $0F9F
+            jp      loadpc
 
 ;******************************************************************************************
 
-_EMUSIC:    exx                         ; TERSE CODE; first music processor array
-            ld      de,$D0B1            ; Why load value and then add to it?
-            ld      hl,$002F            ; resulting address is $D0E0
-            add     hl,de
-            ld      (hl),$01
-            ld      hl,$0004
+_EMUSIC:    exx                         ; TERSE CODE: initialize music processor 1
+            ld      de,$D0B1            ; Base of MUSIC-BARRAY-1
+            ld      hl,$002F            ; MST field
+            add     hl,de               ; $D0E0
+            ld      (hl),$01            ; Hold score processing during initialization
+            ld      hl,$0004            ; SOUNDBOX field
             add     hl,de               ; $D0B5
-            ld      (hl),$18
+            ld      (hl),$18            ; Processor 1 maps to ports $10-$17
             call    emusic
             DW      _DSPATCH
 
@@ -4080,14 +4199,14 @@ _MPMUSIC:   pop     hl
 ;    emusic CALL, ( musicoverun flag is zeroed last ) NEXT
 ;   ( *** ALWAYS CALL E2MUSIC AS AN INIT IN PROGRAM *** )
 ;##########################################################################################
-_E2MUSIC:   exx
-            ld      de,$D0E1
-            ld      hl,$002F
-            add     hl,de
-            ld      (hl),$01
-            ld      hl,$0004
-            add     hl,de
-            ld      (hl),$58
+_E2MUSIC:   exx                         ; TERSE CODE: initialize music processor 2
+            ld      de,$D0E1            ; Base of MUSIC-BARRAY-2
+            ld      hl,$002F            ; MST field
+            add     hl,de               ; $D110
+            ld      (hl),$01            ; Hold score processing during initialization
+            ld      hl,$0004            ; SOUNDBOX field
+            add     hl,de               ; $D0E5
+            ld      (hl),$58            ; Processor 2 maps to ports $50-$57
             call    emusic
             DW      _DSPATCH
 
@@ -4145,6 +4264,47 @@ SHUTUP:     DB      _ENTER
             DW      _E2MUSIC
             DW      _RETURN
 
+;******************************************************************************************
+; GORF VOTRAX SPEECH ARCHITECTURE
+;
+; A TALK PRIM is the unit queued by SPEAK. Each primitive is stored as:
+;
+;       DB  phoneme_count
+;       DB  phoneme_0, phoneme_1, ... phoneme_(count-1)
+;
+; The low six bits select the SC-01 phoneme. Source modifiers HI ($80) and UP ($40)
+; are ORed into the phoneme byte to carry the inflection control used by the game.
+;
+; The resident English path queues primitive addresses in an eight-entry circular
+; pointer queue spanning TOPTALK through BOTTOMTALK. TALKIN is the producer pointer;
+; TALKOUT is the consumer pointer. PHONE services that queue from the periodic interrupt,
+; sending one phoneme whenever NEWPHONE reports the SC-01 ready.
+;
+; Program 2 exposes 36 resident speech keys:
+;       26 low-ROM primitives     $115D-$1317
+;        3 Flag Ship primitives  $A985-$A9C1
+;        7 late-ROM primitives   $B3BE-$B465
+;
+; Phrase composition occurs above the primitive layer. Several game phrases are complete
+; TALK PRIM records, while others are assembled by queuing multiple primitives. The rank
+; construction is the clearest example:
+;
+;       SPK_SPACE -> one of SPK_CADET/SPK_CAPT/SPK_COLONEL/
+;                    SPK_GENERAL/SPK_WARRIOR/SPK_AVENGER
+;
+; SETTINGS bit 3 selects the resident English path. When it is clear, SPEAK transfers the
+; primitive request to the language ROM entry at FOREIGN_SPEECH_ENTRY ($C000).
+;
+; Three additional Program-2 TALK PRIM records live in the upper ROM and form the Flag Ship
+; completion announcement:
+;
+;       SPK_FLAGSHIP_INTRO        $A985  "Next time will be harder, but for now"
+;       SPK_GORFIAN_CHRONICLES    $A9A8  "In the Gorfian chronicles"
+;       SPK_FLAGSHIP_HIT          $A9C1  "For hitting my flagship"
+;
+; They are speech keys in the same resident-address namespace used by the language ROM.
+;******************************************************************************************
+
 ;##########################################################################################
 ; { BLOCK 0098 }
 ;  ( SCOT'S VOTRAX TALKING CHIP SOFTWARE for JAY )
@@ -4174,7 +4334,7 @@ _BZERO:     pop     hl
 ;   0 BV= ONHOLD ( timer to time out before talking )
 ;   0 V= TOPTALK ( top stack entry )
 ;   VPTR @ #TALKSTK 2- -1 MAX 2 * + VPTR !
-;   0 V= BOTTOMTALK ( not related to asses )
+;   0 V= BOTTOMTALK ( bottom speech queue entry )
 ;   0 V= TALKHERE ( holds phoneme address to talk from )
 ;   0 BV= PHONE# ( # of phonemes in primitive statement )
 ;   0 V= TALKIN ( holds stack address to stuff next primitive into
@@ -4188,7 +4348,8 @@ _BZERO:     pop     hl
 ;
 ;******************************************************************************************
 
-                ; No code. DEFINITIONS???
+                ; Source-level RAM and vocabulary declarations.
+                ; The release image emits no executable bytes for this block.
 
 ;******************************************************************************************
 ;
@@ -4212,7 +4373,8 @@ _BZERO:     pop     hl
 ;
 ;******************************************************************************************
 
-                ; No code. DEFINITIONS???
+                ; Source-level SC-01 phoneme constants and inflection helpers.
+                ; The release image emits no executable bytes for this block.
 
 ;******************************************************************************************
 ; { BLOCK 0101 }
@@ -4224,7 +4386,9 @@ _BZERO:     pop     hl
 ; CC? IFTRUE HERE there ! DP ! TERSE DEFINITIONS IFEND
 ;******************************************************************************************
 
-                ; No code. NOT UNDERSTOOD???
+                ; Source compiler helpers for constructing TALK PRIM records.
+                ; PRIM marks the start of a primitive; ENDPRIM writes the phoneme count.
+                ; These definitions emit no executable bytes at this location.
 
 ;##########################################################################################
 ; SUBR speaklink .REL 10 IN, 80 ANI, RZ,
@@ -4232,22 +4396,39 @@ _BZERO:     pop     hl
 ; XCHG, BOTTOMTALK H LXI, A ANA, D DSBC, <, IF, TOPTALK D LXI,
 ; THEN, TALKIN SDED, EI, RET,
 ;##########################################################################################
+;******************************************************************************************
+; ----> speaklink   Queue one resident English TALK PRIM.
+;
+; In:    DE = address of a TALK PRIM
+;
+; Port $10 bit 7 is the source-defined gate for the resident speech request. When the
+; gate is clear, the request is discarded. When set, the primitive address is written to
+; the slot selected by TALKIN, TALKIN advances by one word, and the producer pointer wraps
+; from BOTTOMTALK back to TOPTALK.
+;
+; The queue stores primitive pointers, not phoneme bytes. Interrupts are disabled only
+; while the producer pointer and queue entry are updated.
+;******************************************************************************************
 speaklink:  in      a,($10)
             and     $80
             ret     z
+
             di
-            ld      hl,($D125)
-            ld      (hl),e
+            ld      hl,(TALKIN)
+            ld      (hl),e              ; Queue primitive address, low byte
             inc     hl
-            ld      (hl),d
-            inc     hl
-            ex      de,hl
-            ld      hl,$D120
+            ld      (hl),d              ; Queue primitive address, high byte
+            inc     hl                  ; HL = next producer slot
+            ex      de,hl               ; DE = next producer slot
+
+            ld      hl,BOTTOMTALK
             and     a
             sbc     hl,de
-            jr      nc,$10D1
-            ld      de,$D112
-            ld      ($D125),de
+            jr      nc,speaklink_store
+            ld      de,TOPTALK          ; Wrap after final queue slot
+
+speaklink_store:
+            ld      (TALKIN),de
             ei
             ret
 
@@ -4255,15 +4436,31 @@ speaklink:  in      a,($10)
 ; HEX SUBR speak SETTINGS IN, 8 ANI, speaklink JNZ, 0C000 JMP,
 ; .ABS
 ;##########################################################################################
-speak:      in      a,($13)
+;******************************************************************************************
+; ----> speak       Route one TALK PRIM request to the selected language implementation.
+;
+; In:    DE = address of the resident English TALK PRIM
+;
+; SETTINGS bit 3 set:
+;       Queue the resident Program-2 English primitive through speaklink.
+;
+; SETTINGS bit 3 clear:
+;       Transfer control to the language ROM at FOREIGN_SPEECH_ENTRY ($C000). The foreign
+;       module receives the same logical speech request and provides its own language data.
+;******************************************************************************************
+speak:      in      a,(SETTINGS)
             and     $08
             jp      nz,speaklink
-            jp      $C000
+            jp      FOREIGN_SPEECH_ENTRY
 
 ;########################################################################################
 ; CODE SPEAK D POP, speak CALL, NEXT
 ; DECIMAL -->
 ;########################################################################################
+;******************************************************************************************
+; ----> SPEAK       TERSE interface to speak.
+;                   Pops a TALK PRIM address and submits it to the active language path.
+;******************************************************************************************
 _SPEAK:     pop     de
             call    speak
             DW      _DSPATCH
@@ -4286,109 +4483,147 @@ _SPEAK:     pop     de
 ;  PHONEOUT C MVI, A INP, TALKHERE SHLD, THEN, ELSE,
 ;  A DCR, ONHOLD STA, THEN, RET, -->
 ;##########################################################################################
-
-; GORFOS Block 0102 names this interrupt helper PHONE.
-phone:      ld      a,($D111)
+;******************************************************************************************
+; ----> phone       Interrupt-time Votrax queue service.
+;
+; The periodic interrupt calls PHONE after the music/sound service. PHONE performs at most
+; one SC-01 phoneme transfer per call.
+;
+; ONHOLD:
+;       Non-zero values delay speech. The counter is decremented and no queue work occurs.
+;
+; NEWPHONE ($12), bit 7:
+;       SC-01 ready indication. If the chip is not ready, PHONE returns immediately.
+;
+; PHONECOUNT:
+;       Number of phonemes remaining in the active primitive after the phoneme about to be
+;       sent. A zero count causes PHONE to fetch the next primitive pointer from TALKOUT.
+;
+; TALKOUT:
+;       Advances by one word when the final phoneme of a primitive is loaded, wrapping from
+;       BOTTOMTALK to TOPTALK.
+;
+; Queue empty:
+;       When TALKIN == TALKOUT and no primitive is active, PHONE issues STOP ($3F) on the
+;       speech I/O cycle and returns.
+;******************************************************************************************
+phone:      ld      a,(ONHOLD)
             or      a
-            jp      nz,L1158            ;???
+            jp      nz,phone_hold
 
-            in      a,($12)             ; Check to see if ready to accept phoneme
+            in      a,($12)             ; NEWPHONE: SC-01 ready status
             bit     7,a
-            jp      z,L1155             ; Not ready...
+            jp      z,phone_return_gate
 
-            ld      a,($D124)           ; Check last phoneme
-            or      a                   ; End of the phoneme string?
-            jp      nz,L1128            ; No, go say phoneme
+            ld      a,(PHONECOUNT)
+            or      a
+            jp      nz,phone_continue_primitive
 
-            ld      hl,($D125)          ; ???
-            ld      de,($D127)          ; ???
-            sbc     hl,de               ; ???
-            jp      z,L111A             ; ???
-            ld      bc,$0D15            ; Coin counter, star enable, sparkle 1
-            in      a,(c)               ; Writes reg B to do the above
-            ex      de,hl               ;
-            ld      e,(hl)              ;
-            inc     hl                  ;
-            ld      d,(hl)              ;
-            ex      de,hl               ;
-            ld      a,(hl)              ;
-            inc     hl                  ;
-            ld      ($D122),hl          ; Save the phoneme
-            jp      L1125               ;
+            ld      hl,(TALKIN)
+            ld      de,(TALKOUT)
+            sbc     hl,de               ; Carry is already clear from PHONECOUNT OR A above
+            jp      z,phone_queue_empty
 
-L111A:      ld      bc,$3F17            ; STOP talking...
+            ld      bc,$0D15            ; Source-defined auxiliary I/O cycle before a primitive
             in      a,(c)
-            ld      bc,$0C15            ; Star enable, sparkle 1
+
+            ex      de,hl               ; HL = TALKOUT queue slot
+            ld      e,(hl)
+            inc     hl
+            ld      d,(hl)              ; DE = queued TALK PRIM address
+            ex      de,hl               ; HL = TALK PRIM
+            ld      a,(hl)              ; Primitive phoneme count
+            inc     hl
+            ld      (TALKHERE),hl        ; First phoneme address
+            jp      phone_count_ready
+
+phone_queue_empty:
+            ld      bc,$3F17            ; STOP phoneme ($3F) on PHONEOUT ($17)
             in      a,(c)
-            ret                         ;
+            ld      bc,$0C15            ; Source-defined auxiliary I/O cycle after STOP
+            in      a,(c)
+            ret
 
-L1125:      jp      L112B
+phone_count_ready:
+            jp      phone_decrement_count
 
-L1128:      ld      hl,($D122)          ; Retrieve the phoneme
-L112B:      dec     a
-            jp      nz,L1149            ; what are we checking for here???
+phone_continue_primitive:
+            ld      hl,(TALKHERE)
+
+phone_decrement_count:
+            dec     a
+            jp      nz,phone_send
 
             exx
-            ld      hl,($D127)
+            ld      hl,(TALKOUT)
             ld      de,$0002
-            add     hl,de
+            add     hl,de               ; Advance consumer to next queue slot
             ex      de,hl
-            ld      hl,$D120
+            ld      hl,BOTTOMTALK
             or      a
             sbc     hl,de
-            jp      nc,L1144
-            ld      de,$D112
-L1144:      ld      ($D127),de
+            jp      nc,phone_store_talkout
+            ld      de,TOPTALK
+
+phone_store_talkout:
+            ld      (TALKOUT),de
             exx
 
-L1149:      ld      ($D124),a           ; save the current phoneme
-            ld      b,(hl)              ; load b with phoneme
-            inc     hl                  ; ready next phoneme
-            ld      c,$17               ; load up speech port
-            in      a,(c)               ; say the phoneme
-            ld      ($D122),hl          ; save the next phoneme
-L1155:      jp      L115C               ; jump to return... why???
+phone_send:
+            ld      (PHONECOUNT),a
+            ld      b,(hl)              ; B = encoded SC-01 phoneme
+            inc     hl
+            ld      c,$17               ; PHONEOUT
+            in      a,(c)               ; I/O cycle presents phoneme in upper address byte
+            ld      (TALKHERE),hl
 
-L1158:      dec     a                   ; ???
-            ld      ($D111),a           ; ???
+phone_return_gate:
+            jp      phone_return        ; Preserve the ROM control-flow join at $1155
 
-L115C:      ret
+phone_hold:
+            dec     a
+            ld      (ONHOLD),a
+
+phone_return:
+            ret
 
 ;******************************************************************************************
+; RESIDENT ENGLISH TALK PRIMITIVES
 ;
-; The sentences that Gorf speaks is the data in the next section. The first byte
-; is the length of the speech string. Note that data that is out of range of the
-; regular table is because there are bits being changed for different inflections.
-; See the last line of the phoneme table.
+; Each record begins with an 8-bit phoneme count followed by that many encoded SC-01
+; phoneme bytes. The low six bits select the phoneme; bit 7 (HI) and bit 6 (UP) carry
+; the source-defined inflection modifiers.
 ;
-;                   PHONME LIST
+; The DB records below are the released Program-2 speech data. The source listings provide
+; the phoneme mnemonics and primitive names; the emitted bytes define the exact playback.
+;
+;                   SC-01 PHONEME TABLE
 ;
 ;       00 EH3    01 EH2    02 EH1    03 PA0    04 DT
-;       05 pA2    06 pA1    07 ZH    08 AH2    09 I3
-;       10 I2    0B I1    0C M    0D N    0E pB
-;       0F V    10 CH    11 SH    12 Z    13 AW1
-;       14 NG    15 AH1    16 OO1    17 OO    18 L
-;       19 K0    1A J0    1B H    1C G    1D pF
-;       1E pD    1F S    20 pA    21 AY    22 Y1
-;       23 UH3    24 AH    25 P    26 O    27 I0
-;       28 U    29 Y    2A T    2B R    2C pE
-;       2D W    2E pAE    2F pAE1    30 AW2    31 UH2
-;       32 UH1    33 UH    34 O2    35 O1    36 IU
-;       37 U1    38 THV    39 TH    3A ER    3B EH
-;       3C pE1    3D AW    3E PA1  ( 3F  STOP )
+;       05 pA2    06 pA1    07 ZH     08 AH2    09 I3
+;       0A I2     0B I1     0C M      0D N      0E pB
+;       0F V      10 CH     11 SH     12 Z      13 AW1
+;       14 NG     15 AH1    16 OO1    17 OO     18 L
+;       19 K0     1A J0     1B H      1C G      1D pF
+;       1E pD     1F S      20 pA     21 AY     22 Y1
+;       23 UH3    24 AH     25 P      26 O      27 I0
+;       28 U      29 Y      2A T      2B R      2C pE
+;       2D W      2E pAE    2F pAE1   30 AW2    31 UH2
+;       32 UH1    33 UH     34 O2     35 O1     36 IU
+;       37 U1     38 THV    39 TH     3A ER     3B EH
+;       3C pE1    3D AW     3E PA1    3F STOP
 ;
-;       { : HI } 80 OR { ; } { : UP } 40 OR { ; }
-;
-; RE NOTE: The release ROM is authoritative for the DB records below. A source-to-ROM
-; audit found that some later TALK PRIM printout comments omit $40 (UP) inflection bits
-; carried by the released bytes, and a few source tokens are ambiguous. Preserve the
-; release DB bytes even when a printed phoneme line is not byte-exact.
-;
+;       HI = $80
+;       UP = $40
 ;******************************************************************************************
 ;##########################################################################################
 ;       DATA 'INSERT TALK PRIM
 ;       PA1 I0 N S ER T PA1 K0 O1 UH3 I3 AY N N PA1 ENDPRIM
 ;##########################################################################################
+;******************************************************************************************
+; Speech: "Insert coin."
+; Role:   Complete attract-mode utterance; GOYTBL entries 0 and 3.
+;******************************************************************************************
 
 SPK_INSERT:
             DB      $0F                 ; Length of phrase
@@ -4400,10 +4635,14 @@ SPK_INSERT:
 ;       AH1 I1 UP Y UP pAE M UP THV UH1 UP G DT O1 R UP pF UP Y pA1 N
 ;       EH1 UP M UP P AH1 I1 R PA1 ENDPRIM
 ;##########################################################################################
+;******************************************************************************************
+; Speech: "I am the Gorfian Empire."
+; Role:   Complete utterance; used by attract, mission-start, and last-ship follow-up speech.
+;******************************************************************************************
 
 SPK_GORF:
             DB      $17                 ; Length of phrase
-            DB      $3E, $15, $4B, $69, $2E, $4C, $38, $72    ; GORF ???
+            DB      $3E, $15, $4B, $69, $2E, $4C, $38, $72
             DB      $1C, $04, $35, $6B, $5D, $29, $06, $0D
             DB      $42, $4C, $25, $15, $0B, $2B, $3E
 
@@ -4411,6 +4650,10 @@ SPK_GORF:
 ;       DATA 'SPACE TALK PRIM
 ;       S P pA1 I3 UP Y UP S UP ENDPRIM
 ;##########################################################################################
+;******************************************************************************************
+; Speech: "Space"
+; Role:   Rank-prefix fragment. GETRANK queues this before the selected rank primitive.
+;******************************************************************************************
 
  SPK_SPACE:
             DB      $06
@@ -4421,6 +4664,10 @@ SPK_GORF:
 ;       G DT O1 UP R UP pF UP Y UP pA1 N S K0 AH1 N K0 UP ER UP
 ;       AH2 N UP UH UP TH UP ER G UP pAE1 L UH1 K0 UP S Y PA1 ENDPRIM
 ;##########################################################################################
+;******************************************************************************************
+; Speech: "Gorfians conquer another galaxy."
+; Role:   Complete game-over follow-up; LBYTBL.
+;******************************************************************************************
 
 SPK_CONQUER:
             DB      $1B
@@ -4434,6 +4681,10 @@ SPK_CONQUER:
 ;       T R UP AH2 UP I1 UP Y UP PA0 UH1 G UP EH1 UP I3 N PA1 PA1 AH1
 ;       I1 UP Y1 UP pD Y V AH1 UP U1 ER K0 UP O1 UP UH3 I3 pE1 N S PA1
 ;##########################################################################################
+;******************************************************************************************
+; Speech: "Try again; I devour your coins."
+; Role:   Complete game-over follow-up; LBYTBL.
+;******************************************************************************************
 
 SPK_TRY:
             DB      $1E
@@ -4446,6 +4697,10 @@ SPK_TRY:
 ;       DATA 'LONG TALK PRIM
 ;       PA1 L AW UP NG UP L I1 UP V UP G UP DT UP O1 UP O1 UP R R pF pF
 ;##########################################################################################
+;******************************************************************************************
+; Speech: "Long live Gorf!"
+; Role:   Complete attract/ready-to-play utterance; GOYTBL and SPKCOIN.
+;******************************************************************************************
 
 SPK_LONG:
             DB      $0F
@@ -4458,6 +4713,10 @@ SPK_LONG:
 ;       R UP O1 UP U1 UP pB AH1 UH3 T S PA1 PA1
 ;       UH1 T pAE EH3 UP K0 UP PA0 UH1 T pAE EH3 UP K0 UP PA1 ENDPRIM
 ;##########################################################################################
+;******************************************************************************************
+; Speech: "Gorfian robots... attack! attack!"
+; Role:   Complete mission-start utterance; SPEAKSTART.
+;******************************************************************************************
 
 SPK_ROBOTS:
             DB      $1E
@@ -4471,6 +4730,10 @@ SPK_ROBOTS:
 ;       pB pAE EH1 UP pD UP M UP U UP U1 V PA1
 ;       ENDPRIM
 ;##########################################################################################
+;******************************************************************************************
+; Speech: "Bad move"
+; Role:   Loss-of-ship prefix; HITYAK appends SPACE + current rank.
+;******************************************************************************************
 
 SPK_BADMOVE:
             DB      $09
@@ -4480,6 +4743,10 @@ SPK_BADMOVE:
 ;       DATA 'HA TALK PRIM
 ;       H UP AH1 UP H AH1 UP H AH1 UP H AH1 PA1 ENDPRIM
 ;##########################################################################################
+;******************************************************************************************
+; Speech: "Ha ha ha ha!"
+; Role:   Complete loss-of-ship taunt; HITYAK.
+;******************************************************************************************
 
 SPK_HAHA:
             DB      $09
@@ -4491,6 +4758,10 @@ SPK_HAHA:
 ;       pE1 UP P UP THV UH1 G DT O1 UP R UP pF UP Y UP pA1 N
 ;       PA0 R O1 UP U1 UP pB AH1 T S PA1 ENDPRIM
 ;##########################################################################################
+;******************************************************************************************
+; Speech: "You cannot escape the Gorfian robots."
+; Role:   Complete utterance; mission-start and last-ship follow-up.
+;******************************************************************************************
 
 SPK_ESCAPE:
             DB      $23
@@ -4504,6 +4775,10 @@ SPK_ESCAPE:
 ;       DATA 'GOTYOU TALK PRIM
 ;       G AH1 EH3 UP T UP Y1 UP I3 U1 PA1 ENDPRIM
 ;##########################################################################################
+;******************************************************************************************
+; Speech: "Got you"
+; Role:   Loss-of-ship prefix; HITYAK appends SPACE + current rank.
+;******************************************************************************************
 
 SPK_GOTYOU:
             DB      $08
@@ -4514,6 +4789,11 @@ SPK_GOTYOU:
 ;       N UH3 AH2 UP Y UP S UP PA0 UP
 ;       SH UP AH1 UP UH3 T PA1 ENDPRIM
 ;##########################################################################################
+;******************************************************************************************
+; Speech: "Nice shot"
+; Role:   Standalone resident speech primitive. Program 2 contains no direct symbolic
+;         reference to this key in the decoded control flow.
+;******************************************************************************************
 
 SPK_NICE:
             DB      $0B
@@ -4523,6 +4803,10 @@ SPK_NICE:
 ;       DATA 'TOOBAD TALK PRIM
 ;       T U UP pB UP pAE UP EH3 pD PA1 ENDPRIM
 ;##########################################################################################
+;******************************************************************************************
+; Speech: "Too bad"
+; Role:   Last-ship prefix; LBYAK appends SPACE + current rank.
+;******************************************************************************************
 
 SPK_TOOBAD:
             DB      $07
@@ -4533,6 +4817,10 @@ SPK_TOOBAD:
 ;       G DT O1 UP R UP pF Y pA1 N S T pA UP K0 UP N O UP
 ;       P R UP I1 UP S UP I3 UP N EH3 R S PA1 ENDPRIM -->
 ;##########################################################################################
+;******************************************************************************************
+; Speech: "Gorfians take no prisoners!"
+; Role:   Complete mission-start utterance; SPEAKSTART.
+;******************************************************************************************
 
 SPK_PRIS:
             DB      $18
@@ -4544,6 +4832,10 @@ SPK_PRIS:
 ;       DATA 'CADET TALK PRIM
 ;       K0 UH pD EH2 UP T UP PA1 ENDPRIM
 ;##########################################################################################
+;******************************************************************************************
+; Speech: "Cadet"
+; Role:   Rank suffix selected by GETRANK for SKILLFACTOR 0.
+;******************************************************************************************
 
 SPK_CADET:
             DB      $06
@@ -4553,6 +4845,10 @@ SPK_CADET:
 ;       DATA 'CAPT TALK PRIM
 ;       K0 pAE1 UP EH3 UP P UP T I3 N PA1 ENDPRIM
 ;##########################################################################################
+;******************************************************************************************
+; Speech: "Captain"
+; Role:   Rank suffix selected by GETRANK for SKILLFACTOR 1.
+;******************************************************************************************
 
 SPK_CAPT:
             DB      $08
@@ -4562,6 +4858,10 @@ SPK_CAPT:
 ;       DATA 'COLONEL TALK PRIM
 ;       K0 ER UP N UP AH2 L PA1 ENDPRIM
 ;##########################################################################################
+;******************************************************************************************
+; Speech: "Colonel"
+; Role:   Rank suffix selected by GETRANK for SKILLFACTOR 2.
+;******************************************************************************************
 
 SPK_COLONEL:
             DB      $06
@@ -4571,6 +4871,10 @@ SPK_COLONEL:
 ;       DATA 'GENERAL TALK PRIM
 ;       pD J0 EH2 UP N UP ER UH3 L PA1 ENDPRIM
 ;##########################################################################################
+;******************************************************************************************
+; Speech: "General"
+; Role:   Rank suffix selected by GETRANK for SKILLFACTOR 3.
+;******************************************************************************************
 
 SPK_GENERAL:
             DB      $08
@@ -4580,6 +4884,10 @@ SPK_GENERAL:
 ;       DATA 'WARRIOR TALK PRIM
 ;       W O UP R UP AY UP Y1 UP EH3 R PA1 ENDPRIM
 ;##########################################################################################
+;******************************************************************************************
+; Speech: "Warrior"
+; Role:   Rank suffix selected by GETRANK for SKILLFACTOR 4.
+;******************************************************************************************
 
 SPK_WARRIOR:
             DB      $08
@@ -4589,6 +4897,10 @@ SPK_WARRIOR:
 ;       DATA 'AVENGER TALK PRIM
 ;       UH1 V EH1 UP EH3 UP N UP N pD J0 ER PA1 ENDPRIM
 ;##########################################################################################
+;******************************************************************************************
+; Speech: "Avenger"
+; Role:   Rank suffix selected by GETRANK for SKILLFACTOR 5 and above.
+;******************************************************************************************
 
 SPK_AVENGER:
             DB      $0A
@@ -4599,6 +4911,13 @@ SPK_AVENGER:
 ;       Y1 IU U1 UP U1 UP H pAE1 EH3 UP V UP pB EH3 EH1 UP N UP
 ;       P R UH2 M O UP T UP EH3 pD PA0 T IU U1 PA0 ENDPRIM -->
 ;##########################################################################################
+;******************************************************************************************
+; Speech: "You have been promoted to"
+; Role:   Promotion prefix. The Program-2 phrase is:
+;             SPK_PROMOTE + SPK_SPACE + current rank
+;         producing "You have been promoted to Space <rank>."
+;         No decoded resident control-flow path directly references this primitive.
+;******************************************************************************************
 
 SPK_PROMOTE:
             DB      $19
@@ -4613,6 +4932,10 @@ SPK_PROMOTE:
 ;       S UH M G UH1 L pAE K0 T I1 K0 PA0 pD pE1 pF UP EH1 UP N pD ER
 ;       PA0 Y IU UP U1 UP U1 UP UH R PA1 ENDPRIM
 ;##########################################################################################
+;******************************************************************************************
+; Speech: "Some galactic defender you are"
+; Role:   Loss-of-ship prefix; HITYAK appends SPACE + current rank.
+;******************************************************************************************
 
 SPK_SOME:
             DB      $1B
@@ -4626,6 +4949,10 @@ SPK_SOME:
 ;       pB AH2 I3 Y1 UP UP T UP THV UH UP pD UP UH UP S T PA1
 ;       ENDPRIM
 ;##########################################################################################
+;******************************************************************************************
+; Speech: "Bite the dust"
+; Role:   Last-ship prefix; LBYAK appends SPACE + current rank.
+;******************************************************************************************
 
 SPK_BITE:
             DB      $0C
@@ -4638,6 +4965,10 @@ SPK_BITE:
 ;       G DT O1 UP R UP F Y pA1 N PA1 EH UP M UP P AH2 I3 Y R PA1
 ;       ENDPRIM
 ;##########################################################################################
+;******************************************************************************************
+; Speech: "All hail the supreme Gorfian Empire!"
+; Role:   Complete game-over follow-up; LBYTBL.
+;******************************************************************************************
 
 SPK_HAIL:
             DB      $20
@@ -4651,6 +4982,10 @@ SPK_HAIL:
 ;       AH1 N UH THV R UP R UP PA0 EH1 N EH1 M Y
 ;       SH I0 P PA0 pD UP pE1 UP S UP T R O1 I1 Y1 pD PA1 ENDPRIM
 ;##########################################################################################
+;******************************************************************************************
+; Speech: "Another enemy ship destroyed!"
+; Role:   Complete loss-of-ship taunt; HITYAK.
+;******************************************************************************************
 
 SPK_ENEMY:
             DB      $1A
@@ -4663,6 +4998,10 @@ SPK_ENEMY:
 ; DATA 'BETCHA TALK PRIM
 ;  Y O UP R UP EH N pD PA0 pD R AW1 S N I0 UP R ENDPRIM
 ;##########################################################################################
+;******************************************************************************************
+; Speech: "Your end draws near"
+; Role:   Loss-of-ship prefix; HITYAK appends SPACE + current rank.
+;******************************************************************************************
 
 SPK_BETCHA:
             DB      $0E
@@ -4679,133 +5018,186 @@ SPK_BETCHA:
 
 RKTBL:      DW      SPK_CADET, SPK_CAPT, SPK_COLONEL, SPK_GENERAL, SPK_WARRIOR, SPK_AVENGER
 
-_GETRANK:   DB      _ENTER              ; Enter TERSE execution
-            DW      _LIT            ;
-            DW      SKILLFACTOR         ; / Push address of SKILLFACTOR ($D037)
-            DW      _Bat                ; B@ (Fetch player's rank/difficulty byte)
-            DW      _LITbyte            ;
-            DB      $05                 ; / Push literal byte 5 (Max Rank = Avenger)
-            DW      _MIN                ; MIN (Cap the rank at 5)
-            DW      _LIT            ;
-            DW      SPK_SPACE           ; / Push address $1185 ('SPACE TALK PRIM)
-            DW      _SPEAK              ; SPEAK (Speak the primitive at $1185)
-            DW      _ARRAY              ; ARRAY (Use the capped rank to index into a word array...)
-            DW      RKTBL               ; / ...located at base address $1326 (RKTBL)
-            DW      _at                 ; @ (Fetch the address of the specific rank's TALK PRIM)
-            DW      _RETURN             ; ; (Return, leaving the rank's speech address on the stack)
-
 ;******************************************************************************************
-; Phrases used in attract mode
+; ----> GETRANK    Queue the word "Space" and return the primitive for the current rank.
+;
+; SKILLFACTOR is clamped to 5, so every value at or above Space Avenger resolves to the
+; Avenger primitive. GETRANK deliberately does not speak the rank primitive itself: callers
+; receive that address on the TERSE stack and decide when to queue it.
+;
+; Phrase produced after the caller speaks the returned primitive:
+;       "Space Cadet" / "Space Captain" / "Space Colonel" /
+;       "Space General" / "Space Warrior" / "Space Avenger"
 ;******************************************************************************************
-
-phrases:    DW      SPK_INSERT
-            DW      SPK_GORF
-            DW      SPK_LONG
-            DW      SPK_INSERT
-
-;******************************************************************************************
-; Music data ?
-;******************************************************************************************
-L1354:      DB      $14,$86,$10,$10,$06,$10,$3C,$01
-            DB      $03,$13,$5E,$12,$96,$11,$7E,$16
-            DB      $FF,$15,$0F,$01,$40,$04
-
-AM_FX:      DB      $02,$56,$13
-
-W_136D:
-            DB      _ENTER
+_GETRANK:   DB      _ENTER
             DW      _LIT
-            DW      L1354
+            DW      SKILLFACTOR
+            DW      _Bat
+            DW      _LITbyte
+            DB      $05
+            DW      _MIN
+            DW      _LIT
+            DW      SPK_SPACE
+            DW      _SPEAK
+            DW      _ARRAY
+            DW      RKTBL
+            DW      _at
+            DW      _RETURN
+
+;******************************************************************************************
+; GORFOS BLOCK 0109 - ATTRACT SPEECH AND COIN SOUND
+;******************************************************************************************
+
+; Attract-mode speech selection table used by goyak. The low two bits selected from the
+; Z80 refresh register index one of these four primitive speech records.
+GOYTBL:     DW      SPK_INSERT          ; "Insert coin."
+            DW      SPK_GORF            ; "I am the Gorfian Empire."
+            DW      SPK_LONG            ; "Long live Gorf!"
+            DW      SPK_INSERT          ; "Insert coin."
+
+; Coin sound score consumed by the native music opcode interpreter.
+;
+; Source score: VIBS $86; MASTER $10; RAMP $03,$01,$3C,$10; TONES G1,E1,C2;
+;               ABVOLS $FF; MCVOLS $0F; DURATION $40; QUIET.
+COINSOUND1: DB      $14,$86             ; VIBS $86
+coinsound1_continue:
+            DB      $10,$10             ; MASTER $10
+            DB      $06,$10,$3C,$01,$03 ; RAMP
+            DB      $13,$5E,$12,$96,$11,$7E ; TONES G1, E1, C2
+            DB      $16,$FF             ; ABVOLS $FF
+            DB      $15,$0F             ; MCVOLS $0F
+            DB      $01,$40             ; DURATION $40
+            DB      $04                 ; QUIET
+
+; COINSOUND2 is a CONTJUMP stream. Its target is coinsound1_continue, so it enters
+; COINSOUND1 immediately after the opening VIBS command. goyak uses this entry while
+; synchronizing the attract joystick effect with delayed speech.
+COINSOUND2: DB      $02,$56,$13
+
+;******************************************************************************************
+; ----> CNSD    Start COINSOUND1 on music processor 2 through B2MUSIC.
+;               B2MUSIC is non-preemptive: an active priority score is preserved.
+;******************************************************************************************
+_CNSD:      DB      _ENTER
+            DW      _LIT
+            DW      COINSOUND1
             DW      _B2MUSIC
             DW      _RETURN
 
 ;******************************************************************************************
-; say something if joystick moved in attract mode
+; ----> goyak   Attract-mode joystick speech driver.
+;
+;               creditcheck calls goyak while DEMOMODE is active. Joystick movement starts
+;               one GOYTBL phrase and sets GOYFLAG to prevent immediate retriggering. When
+;               the speech queue is idle, goyak loads ONHOLD=$3B and priority-starts
+;               COINSOUND2 on processor 1 before queuing the selected speech primitive.
 ;******************************************************************************************
-AM_TALK:    ld      a,(AMBUSY)          ; Still playing FX / Talk from before
+goyak:      ld      a,(GOYFLAG)
             and     a
-            ret     nz                  ; Yes, so exit
-            call    gj                  ; Read joystick, lower 4 bits, active high
-            and     $0F                 ; Mask out directions
-            ret     z                   ; Return if nothing active.
+            ret     nz                  ; One attract phrase is already active
+            call    gj                  ; Read active player's joystick
+            and     $0F
+            ret     z                   ; No movement
             ld      a,$01
-            ld      (MUSICFLAG),a
-            ld      a,($D124)
+            ld      (MUSICFLAG),a       ; Enable both music processors
+
+            ld      a,(PHONECOUNT)      ; Active primitive still has phonemes pending
             and     a
-            jp      nz,amtalk0
-            ld      hl,($D125)
-            ld      de,($D127)
+            jp      nz,goyak_select_phrase
+            ld      hl,(TALKIN)         ; Producer pointer
+            ld      de,(TALKOUT)        ; Consumer pointer
             sbc     hl,de
-            jp      nz,amtalk0
+            jp      nz,goyak_select_phrase
+
             ld      a,$3B
-            ld      ($D111),a
-            ld      hl,AM_FX
-            ld      iy,$D0B1
-            call    pmusic
-amtalk0:    ld      a,r
+            ld      (ONHOLD),a           ; Delay speech until the synchronized effect is underway
+            ld      hl,COINSOUND2
+            ld      iy,$D0B1            ; Music processor 1
+            call    pmusic              ; Priority-start synchronized coin effect
+
+goyak_select_phrase:
+            ld      a,r
             and     $03
-            rlca
+            rlca                        ; Word-table offset: (R & 3) * 2
             ld      e,a
             ld      d,$00
-            ld      hl,phrases
+            ld      hl,GOYTBL
             add     hl,de
             ld      e,(hl)
             inc     hl
-            ld      d,(hl)
-            ld      a,$01               ; Set flag to say we are busy
-            ld      (AMBUSY),a
+            ld      d,(hl)              ; DE = selected TALK primitive
+            ld      a,$01
+            ld      (GOYFLAG),a
             jp      speak
 
 ;******************************************************************************************
-; Speak random phrase
+; GORFOS BLOCK 0110 - PLAYER TAUNT SPEECH
 ;******************************************************************************************
 
-GENERIC:    DW      SPK_CONQUER
-            DW      SPK_TRY
-            DW      SPK_ESCAPE
-            DW      SPK_GORF
-            DW      SPK_HAIL
+; Follow-up phrase table used by LBYAK after the player's last fire base is destroyed.
+LBYTBL:     DW      SPK_CONQUER         ; "Gorfians conquer another galaxy."
+            DW      SPK_TRY             ; "Try again; I devour your coins."
+            DW      SPK_ESCAPE          ; "You cannot escape the Gorfian robots."
+            DW      SPK_GORF            ; "I am the Gorfian Empire."
+            DW      SPK_HAIL            ; "All hail the supreme Gorfian Empire!"
 
-_SPKGENERIC:
-            DB      _ENTER
+;******************************************************************************************
+; ----> LBYAK   Last-ship / last-fire-base taunt sequence.
+;
+;               PLAYERHITCHECK enters KILLLAST when FBCOUNTER reaches zero. KILLLAST calls
+;               LBYAK during the final fire-base destruction sequence.
+;
+;               LBYAK queues one of:
+;                   "Too bad, Space <rank>."
+;                   "Bite the dust, Space <rank>."
+;
+;               It then queues one random game-over follow-up from LBYTBL.
+;******************************************************************************************
+_LBYAK:     DB      _ENTER
             DW      _LITbyte
             DB      $02
             DW      _RND
             DW      _0BRANCH
-            DW      generic0
+            DW      lbyak_bite
             DW      _LIT
             DW      SPK_TOOBAD
             DW      _BRANCH
-            DW      generic1
-generic0:   DW      _LIT
+            DW      lbyak_continue
+lbyak_bite: DW      _LIT
             DW      SPK_BITE
-generic1:   DW      _SPEAK
+lbyak_continue:
+            DW      _SPEAK
             DW      _GETRANK
             DW      _SPEAK
             DW      _LITbyte
             DB      $05
             DW      _RND
             DW      _ARRAY
-            DW      GENERIC
+            DW      LBYTBL
             DW      _at
             DW      _SPEAK
             DW      _RETURN
 
-;******************************************************************************************
-; Speak random insult
-;******************************************************************************************
+; Non-repeating loss-of-ship taunt table. HTYRND stores the previous table index.
+HITYTBL:    DW      SPK_HAHA            ; "Ha ha ha ha!"                         (complete)
+            DW      SPK_ENEMY           ; "Another enemy ship destroyed!"        (complete)
+            DW      SPK_BETCHA          ; "Your end draws near, Space <rank>."
+            DW      SPK_BADMOVE         ; "Bad move, Space <rank>."
+            DW      SPK_GOTYOU          ; "Got you, Space <rank>."
+            DW      SPK_SOME            ; "Some galactic defender you are, Space <rank>."
 
-INSULTS:    DW      SPK_HAHA
-            DW      SPK_ENEMY
-            DW      SPK_BETCHA
-            DW      SPK_BADMOVE
-            DW      SPK_GOTYOU
-            DW      SPK_SOME
-
-_SPKINSULT:
-            DB      _ENTER
+;******************************************************************************************
+; ----> HITYAK  Surviving-fire-base hit taunt.
+;
+;               PLAYERHITCHECK calls HITYAK during its eight-step post-hit sequence while
+;               at least one fire base remains. UNEQRND prevents the immediately preceding
+;               HITYTBL selection from repeating.
+;
+;               Entries 0-1 are complete phrases. Entries 2-5 append SPACE + current rank.
+;******************************************************************************************
+_HITYAK:    DB      _ENTER
             DW      _LIT
-            DW      $D12A
+            DW      HTYRND              ; Previous HITYTBL selection
             DW      _LITbyte
             DB      $06
             DW      _UNEQRND
@@ -4813,18 +5205,20 @@ _SPKINSULT:
             DW      _1
             DW      _gt
             DW      _0BRANCH
-            DW      insult0
+            DW      hityak_no_rank
             DW      _ARRAY
-            DW      INSULTS
+            DW      HITYTBL
             DW      _at
             DW      _SPEAK
             DW      _GETRANK
             DW      _BRANCH
-            DW      insult1
-insult0:    DW      _ARRAY
-            DW      INSULTS
+            DW      hityak_final_speak
+hityak_no_rank:
+            DW      _ARRAY
+            DW      HITYTBL
             DW      _at
-insult1:    DW      _SPEAK
+hityak_final_speak:
+            DW      _SPEAK
             DW      _RETURN
 
 ;******************************************************************************************
@@ -5105,9 +5499,7 @@ W_1476:
             ret
 
 ;******************************************************************************************
-;
-; Countdown timer ??? and resets system afterwards...
-;
+; ----> L1593       Fixed busy-wait delay followed by a cold restart.
 ;******************************************************************************************
 L1593:      ld      e,$06
 L1595:      dec     l
@@ -5355,11 +5747,11 @@ WPZAP1:     call    wpb_bang
             djnz    WPZAP1
 
             xor     a
-            ld      ($D124),a
-            ld      ($D111),a
-            ld      hl,$D112
-            ld      ($D125),hl
-            ld      ($D127),hl
+            ld      (PHONECOUNT),a      ; No active primitive
+            ld      (ONHOLD),a          ; No speech holdoff
+            ld      hl,TOPTALK
+            ld      (TALKIN),hl         ; Empty queue: producer == consumer == TOPTALK
+            ld      (TALKOUT),hl
             ld      bc,$0C15
             in      a,(c)
             ld      hl,DEMOMODE
@@ -5379,7 +5771,7 @@ WPNOZ:      ld      hl,$D00B
             ld      e,$01
             ld      hl,DEMOMODE
             call    wpb_bang            ; Write byte to protected memory
-            jp      L1593               ; Countdown timer ???
+            jp      L1593               ; Fixed delay, then cold restart
             exx
             DW      _DSPATCH
 
@@ -5604,8 +5996,7 @@ WPNOZ:      ld      hl,$D00B
 ; ZEROSCORE - ( ZERO QUAD BYTES OF MEMORY )
 ; Description & Context: High-level TERSE word. Clears 3 bytes of memory at the
 ;                        address provided on the stack. Specifically used to zero
-;                        out the 3-byte BCD scores for the players. Previously
-;                        labeled as _P0Q.
+;                        out the 3-byte BCD scores for the players.
 ;******************************************************************************************
 _ZEROSCORE:  exx
             pop     hl
@@ -5756,7 +6147,7 @@ zeroscore0: call    wpb_bang            ; Write byte to protected memory
             push    ix
             push    iy
             call    $0F64
-            call    phone               ; Service queued Votrax phonemes
+            call    phone               ; Interrupt-time SC-01 queue service; at most one phoneme per call
             ld      hl,$D090
             ld      a,(hl)
             and     a
@@ -7584,7 +7975,12 @@ GORF_UNK6:
             ld      (bc),a
             ret     nz
             daa
-            ld      hl,$27A1
+; GORFOS Block 0189 names the looping dive score KBSCORE.
+KBSCORE     EQU     $27A1
+
+; ----> playkbs  Start KBSCORE on music processor 2.
+;                 bmusic preserves an active priority score on this processor.
+playkbs:    ld      hl,KBSCORE
             ld      iy,$D0E1
             jp      bmusic
             ld      a,(PLAYERUP)
@@ -8123,7 +8519,12 @@ GORF_UNK6:
             and     a
             ret     nz
             call    $2A7F
-            ld      hl,$2669
+PLAYER_SHOT_SCORE EQU $2669             ; GORFOS 0186: player-fire score (1DSCORE)
+
+; ----> play_player_shot_sound  Gameplay launcher for the player-fire score.
+;                               BMUSIC preserves an active priority score on processor 1.
+play_player_shot_sound:
+            ld      hl,PLAYER_SHOT_SCORE
             ld      iy,$D0B1
             jp      bmusic
             ld      bc,$0E15
@@ -8680,6 +9081,13 @@ GORF_UNK6:
             ret
             xor     d
             cp      a
+;******************************************************************************************
+; ----> creditcheck  Demo/coin event service.
+;
+;                    During DEMOMODE this routine services attract-mode joystick chatter
+;                    through goyak before evaluating coin/start conditions. Outside DEMOMODE
+;                    it returns after the common event update at $1A60.
+;******************************************************************************************
 creditcheck:
             call    $1A60
             ld      a,(DEMOMODE)
@@ -8688,7 +9096,7 @@ creditcheck:
             in      a,($10)
             bit     2,a
             jp      z,COLDSTRT
-            call    $1376
+            call    goyak               ; Attract-mode joystick speech / coin effect
             ld      a,($D009)
             and     a
             jr      nz,$2F14
@@ -12060,7 +12468,7 @@ ASTRO_BATTLES_INVADER_BULLET_2:
         DB      $40,$00                        ; 1 . . . . . . .
         DB      $55,$54                        ; 1 1 1 1 1 1 1 .
         DB      $40,$00                        ; 1 . . . . . . .
-
+; THUMPSCORE $8115-$812D ends in YIELD; its unlimited ramp holds MUSPC at $812E.
             ld      a,(de)
             rrca
             nop
@@ -12091,7 +12499,7 @@ ASTRO_BATTLES_INVADER_BULLET_2:
             ld      a,e
             djnz    $8199
             nop
-            djnz    $815F
+            djnz    $815F             ; IASCORE begins: MASTER $24
             dec     b
             jr      nz,$816E
             ld      (bc),a
@@ -12107,8 +12515,8 @@ ASTRO_BATTLES_INVADER_BULLET_2:
             adc     a,b
             dec     d
             ex      af,af'
-            inc     bc
-            inc     b
+            inc     bc                ; IASCORE final YIELD opcode $03
+            inc     b                 ; Pending QUIET $04; unlimited ramble keeps MST clear
             rst     $08
             ld      l,l
             nop
@@ -12864,7 +13272,7 @@ ASTRO_BATTLES_INVADER_BULLET_2:
             pop     ix
             ld      a,($D94B)
             add     a,$05
-            ld      ($D0F0),a
+            ld      ($D0F0),a           ; Processor 2 TIMEBASE (IY=$D0E1, offset $0F)
             DW      _DSPATCH
 ;******************************************************************************************
             inc     c
@@ -14778,7 +15186,13 @@ LASER_ATTACK_BUG_SHIP_COMPACT:
             ld      d,$00
             push    de
             call    $900C
-            ld      hl,$8BA0
+LZSCORE     EQU     $8BA0               ; ATTACK FIGHTER 0102: laser score
+
+; ----> play_attack_fighter_laser_sound
+;       FCHECK reaches this branch after saving mission state on the native stack. PMUSIC
+;       clears processor 2 and priority-starts LZSCORE; callers must preserve that context.
+play_attack_fighter_laser_sound:
+            ld      hl,LZSCORE
             ld      iy,$D0E1
             call    pmusic
             pop     de
@@ -15996,7 +16410,14 @@ GALAXIANS_SHIELD_SHIP_4:
             rst     $38
             inc     b
             inc     bc
-            ld      hl,$9786
+GASCORE     EQU     $9786               ; GALAXIANS 0157: attack score
+
+; ----> play_galaxian_attack_sound  Self-contained GA sound launcher.
+;                                    BMUSIC preserves a priority score on processor 2.
+;       GASCORE ends with QUITJUMP at $97BD after configuring an unlimited final ramble.
+;       MUSPC remains $97BE while interrupt-time synthesis continues that ramble.
+play_galaxian_attack_sound:
+            ld      hl,GASCORE
             ld      iy,$D0E1
             jp      bmusic
             di
@@ -21098,6 +21519,10 @@ W_B37E:
 ;       DATA 'PUSH TALK PRIM
 ;       P OO1 IU SH PA1 AY Y1 P L PA2 AY ER PA0 pB UH1 DT T EH2 N N PA1 ENDPRIM
 ;##########################################################################################
+;******************************************************************************************
+; Speech: "Push a player button."
+; Role:   Complete ready-to-play utterance; SPKCOIN.
+;******************************************************************************************
 SPK_PUSH:
             DB      $15
             DB      $25,$16,$76,$51,$06,$21,$22,$25
@@ -21108,6 +21533,10 @@ SPK_PUSH:
 ;       DATA 'DOOM TALK PRIM
 ;       Y1 IU U1 U1 W I1 L M pE pE1 T pA1 pE1 G DT O1 R pF Y pA1 N pD U1 U M PA1 ENDPRIM
 ;##########################################################################################
+;******************************************************************************************
+; Speech: "You will meet a Gorfian doom"
+; Role:   Mission-start prefix; wrapper appends SPACE + current rank.
+;******************************************************************************************
 SPK_DOOM:
             DB      $1A
             DB      $22,$36,$77,$77,$2D,$0B,$58,$0C
@@ -21119,6 +21548,10 @@ SPK_DOOM:
 ;       DATA 'SURVIVAL TALK PRIM
 ;       S ER V AH2 I1 Y1 V UH3 L I1 S PA0 I1 M P AH1 S I1 pB L PA1 ENDPRIM
 ;##########################################################################################
+;******************************************************************************************
+; Speech: "Survival is impossible"
+; Role:   Mission-start prefix; wrapper appends SPACE + current rank.
+;******************************************************************************************
 SPK_SURVIVAL:
             DB      $15
             DB      $5F,$7A,$0F,$08,$0B,$62,$4F,$23
@@ -21130,6 +21563,10 @@ SPK_SURVIVAL:
 ;       R O1 U1 pB AH1 T W O R AY Y1 EH3 R S PA1 S pE K0
 ;       pAE1 EH3 N pD pD pE1 S T R O1 I1 Y THV UH ENDPRIM
 ;##########################################################################################
+;******************************************************************************************
+; Speech: "Robot warriors, seek and destroy the"
+; Role:   Mission-start prefix; wrapper appends SPACE + current rank.
+;******************************************************************************************
 SPK_ROBOWARRIOR:
             DB      $20
             DB      $2B,$75,$77,$0E,$15,$2A,$2D,$66
@@ -21142,6 +21579,10 @@ SPK_ROBOWARRIOR:
 ;       M AH2 I1 Y G DT O1 R pF Y pA1 N PA0 R O1 U1 pB AH1 T S
 ;       PA0 AH1 R UH2 N pB pE1 AY T UH3 pB L PA1 ENDPRIM
 ;##########################################################################################
+;******************************************************************************************
+; Speech: "My Gorfian robots are unbeatable!"
+; Role:   Complete mission-start utterance; SPEAKSTART.
+;******************************************************************************************
 SPK_GORFIAN:
             DB      $22
             DB      $0C,$08,$4B,$69,$1C,$04,$75,$6B
@@ -21155,6 +21596,10 @@ SPK_GORFIAN:
 ;       AH1 I1 Y pAE1 EH2 M THV UH G DT O1 R pF Y pA1 N
 ;       PA0 K0 AH1 N CH EH S N EH S PA1 ENDPRIM
 ;##########################################################################################
+;******************************************************************************************
+; Speech: "I am a Gorfian consciousness."
+; Role:   Complete mission-start utterance; SPEAKSTART.
+;******************************************************************************************
 SPK_IAM:
 
             DB      $1B
@@ -21168,6 +21613,10 @@ SPK_IAM:
 ;       P R pE1 P pAE1 ER Y U1 O1 R S EH1 L pF PA0 pF O1 R PA0
 ;       UH1 N AH2 I1 Y H pA1 SH UH2 N PA1 ENDPRIM
 ;##########################################################################################
+;******************************************************************************************
+; Speech: "Prepare yourself for annihilation"
+; Role:   Mission-start prefix; wrapper appends SPACE + current rank.
+;******************************************************************************************
 SPK_PREPARE:
 
             DB      $1E
@@ -21177,12 +21626,21 @@ SPK_PREPARE:
             DB      $18,$46,$11,$31,$0D,$3E
 
 ;******************************************************************************************
-; Speak one of two messages if credits available
+; ----> SPKCOIN    Ready-to-play credit speech selector.
+;
+;                  Runs only while no primitive is active and COINSIN is non-zero. It sets
+;                  GOYFLAG and queues one of:
+;
+;                       "Push a player button."
+;                       "Long live Gorf!"
+;
+;                  This is the ready-to-play speech path, distinct from joystick-triggered
+;                  attract chatter in goyak.
 ;******************************************************************************************
 SPKCOIN:
             DB      _ENTER
             DW      _LIT
-            DW      $D124
+            DW      PHONECOUNT
             DW      _Bat
             DW      _zeroequal
             DW      _0BRANCH
@@ -21193,7 +21651,7 @@ SPKCOIN:
             DW      _0BRANCH
             DW      spkcoin2
             DW      _LIT
-            DW      AMBUSY
+            DW      GOYFLAG
             DW      _BONE
             DW      _LITbyte
             DB      $02
@@ -21210,17 +21668,23 @@ spkcoin1:   DW      _SPEAK
 spkcoin2:   DW      _RETURN
 
 ;******************************************************************************************
+; ----> SPEAKGORF        Return complete mission-start primitive: "I am the Gorfian Empire."
+;******************************************************************************************
 SPEAKGORF:
             DB      _ENTER
             DW      _LIT
             DW      SPK_GORF
             DW      _RETURN
 ;******************************************************************************************
+; ----> SPEAKROBOTS      Return complete mission-start primitive: "Gorfian robots... attack! attack!"
+;******************************************************************************************
 SPEAKROBOTS:
             DB      _ENTER
             DW      _LIT
             DW      SPK_ROBOTS
             DW      _RETURN
+;******************************************************************************************
+; ----> SPEAKDOOM        Queue "You will meet a Gorfian doom", queue "Space", return current-rank primitive.
 ;******************************************************************************************
 SPEAKDOOM:
             DB      _ENTER
@@ -21230,6 +21694,8 @@ SPEAKDOOM:
             DW      _GETRANK
             DW      _RETURN
 ;******************************************************************************************
+; ----> SPEAKSURVIVAL    Queue "Survival is impossible", queue "Space", return current-rank primitive.
+;******************************************************************************************
 SPEAKSURVIVAL:
             DB      _ENTER
             DW      _LIT
@@ -21238,11 +21704,15 @@ SPEAKSURVIVAL:
             DW      _GETRANK
             DW      _RETURN
 ;******************************************************************************************
+; ----> SPEAKESCAPE      Return complete mission-start primitive: "You cannot escape the Gorfian robots."
+;******************************************************************************************
 SPEAKESCAPE:
             DB      _ENTER
             DW      _LIT
             DW      SPK_ESCAPE
             DW      _RETURN
+;******************************************************************************************
+; ----> SPEAKROBOWARRIOR Queue "Robot warriors, seek and destroy the", queue "Space", return current-rank primitive.
 ;******************************************************************************************
 SPEAKROBOWARRIOR:
             DB      _ENTER
@@ -21252,17 +21722,23 @@ SPEAKROBOWARRIOR:
             DW      _GETRANK
             DW      _RETURN
 ;******************************************************************************************
+; ----> SPEAKGORFIAN     Return complete mission-start primitive: "My Gorfian robots are unbeatable!"
+;******************************************************************************************
 SPEAKGORFIAN:
             DB      _ENTER
             DW      _LIT
             DW      SPK_GORFIAN
             DW      _RETURN
 ;******************************************************************************************
+; ----> SPEAKIAM         Return complete mission-start primitive: "I am a Gorfian consciousness."
+;******************************************************************************************
 SPEAKIAM:
             DB      _ENTER
             DW      _LIT
             DW      SPK_IAM
             DW      _RETURN
+;******************************************************************************************
+; ----> SPEAKPREPARE     Queue "Prepare yourself for annihilation", queue "Space", return current-rank primitive.
 ;******************************************************************************************
 SPEAKPREPARE:
             DB      _ENTER
@@ -21272,35 +21748,65 @@ SPEAKPREPARE:
             DW      _GETRANK
             DW      _RETURN
 ;******************************************************************************************
+; ----> SPEAKPRIS        Return complete mission-start primitive: "Gorfians take no prisoners!"
+;******************************************************************************************
 SPEAKPRIS:
             DB      _ENTER
             DW      _LIT
             DW      SPK_PRIS
             DW      _RETURN
 ;******************************************************************************************
+; ----> SPEAKSTART  Mission-start taunt selector.
+;
+; MSYRND drives UNEQRND across ten entries, preventing the immediately preceding mission
+; start message from repeating. Each CASES entry either returns a complete TALK PRIM or
+; queues a prefix plus GETRANK and returns the final rank primitive. The common SPEAK after
+; the table submits that returned primitive.
+;
+; Complete entries:
+;       I am the Gorfian Empire.
+;       Gorfian robots... attack! attack!
+;       You cannot escape the Gorfian robots.
+;       My Gorfian robots are unbeatable.
+;       I am a Gorfian consciousness.
+;       Gorfians take no prisoners.
+;
+; Rank-completed entries:
+;       You will meet a Gorfian doom, Space <rank>.
+;       Survival is impossible, Space <rank>.
+;       Robot warriors, seek and destroy the Space <rank>.
+;       Prepare yourself for annihilation, Space <rank>.
+;******************************************************************************************
 SPEAKSTART:
             DB      _ENTER
             DW      _LIT
-            DW      $D129
+            DW      MSYRND
             DW      _LITbyte
             DB      $0A
             DW      _UNEQRND
             DW      _CASES
             DW      $B532
-            DW      SPEAKGORF
-            DW      SPEAKROBOTS
-            DW      SPEAKDOOM
-            DW      SPEAKSURVIVAL
-            DW      SPEAKESCAPE
-            DW      SPEAKROBOWARRIOR
-            DW      SPEAKGORFIAN
-            DW      SPEAKIAM
-            DW      SPEAKPREPARE
-            DW      SPEAKPRIS
+            DW      SPEAKGORF          ; I am the Gorfian Empire.
+            DW      SPEAKROBOTS        ; Gorfian robots... attack! attack!
+            DW      SPEAKDOOM          ; You will meet a Gorfian doom, Space <rank>.
+            DW      SPEAKSURVIVAL      ; Survival is impossible, Space <rank>.
+            DW      SPEAKESCAPE        ; You cannot escape the Gorfian robots.
+            DW      SPEAKROBOWARRIOR   ; Robot warriors, seek and destroy the Space <rank>.
+            DW      SPEAKGORFIAN       ; My Gorfian robots are unbeatable!
+            DW      SPEAKIAM           ; I am a Gorfian consciousness.
+            DW      SPEAKPREPARE       ; Prepare yourself for annihilation, Space <rank>.
+            DW      SPEAKPRIS          ; Gorfians take no prisoners!
             DW      _SPEAK
             DW      _RETURN
 ;******************************************************************************************
-W_B536:
+; ----> TURNINTRO   Common player-turn mission presentation.
+;
+;                   Clears the display, updates the cabinet rank lamps from SKILLFACTOR,
+;                   starts one non-repeating mission taunt, then invokes the current-mission
+;                   presentation path through W_B365. The one-player and two-player start
+;                   paths and the player-turn transition path all call this word.
+;******************************************************************************************
+_TURNINTRO:
             DB      _ENTER
             DW      _0
             DW      _FLOOD
@@ -21308,7 +21814,7 @@ W_B536:
             DW      _LIT
             DW      SKILLFACTOR
             DW      _Bat
-            DW      $3CBB
+            DW      _LITERANK
             DW      SPEAKSTART
             DW      _1
             DW      W_B365
@@ -21323,6 +21829,17 @@ W_B536:
             DW      _DSPATCH
             DW      $C3C1
             DW      $B54F
+;******************************************************************************************
+; ----> W_B561      Mission/rank progression.
+;
+;                   Advances MISSIONCTR and MISSION. When MISSION reaches 6, the five-mission
+;                   cycle is complete: qualifying fire-base awards are applied, SKILLFACTOR
+;                   is incremented, and MISSION wraps to 1. This is the rank-state transition
+;                   following completion of the Flag Ship cycle.
+;
+;                   The speech vocabulary contains the matching compound promotion line:
+;                       SPK_PROMOTE + SPK_SPACE + current rank
+;                   No decoded resident control-flow path directly references that primitive.
 ;******************************************************************************************
 W_B561:
             DB      _ENTER
@@ -21882,7 +22399,7 @@ W_B8BB:
             DW      $B8FA
             DW      $B32C
             DW      _LIT
-            DW      AMBUSY
+            DW      GOYFLAG
             DW      _BONE
             DW      $B341
             DW      _LIT
@@ -21904,7 +22421,7 @@ W_B8BB:
 ;******************************************************************************************
 LB900:
             DB      _ENTER
-            DW      $B536
+            DW      _TURNINTRO
             DW      $B561
             DW      _LIT
             DW      $D951
@@ -21952,7 +22469,7 @@ W_B91F:
 ;******************************************************************************************
 W_B952:
             DB      _ENTER
-            DW      $B536
+            DW      _TURNINTRO
             DW      $B561
             DW      _LIT
             DW      $D951
@@ -22017,7 +22534,7 @@ W_B9B3:
             DW      _LIT
             DW      W_B952
             DW      $B55D
-            DW      W_B536
+            DW      _TURNINTRO
             DW      _LIT
             DW      $D951
             DW      _at
@@ -23370,9 +23887,40 @@ COMBO1          EQU     $D042                   ; Combo 1 Vector (2 bytes)
 ;******************************************************************************************
 RELABS          EQU     $D080                   ; relabs pointer
 FFRELABS        EQU     $D083                   ; ffrelabs pointer
-AMBUSY          EQU     $D08B                   ; Used for speech when joystick moved
+GOYFLAG         EQU     $D08B                   ; Attract/ready speech re-entry flag
 RND_SEED        EQU     $D0AB                   ; 32-bit Random Seed RND#0
-MUSICFLAG       EQU     $D0AF                   ;
+MUSICFLAG       EQU     $D0AF                   ; Global native music-processor enable
+
+;******************************************************************************************
+; Votrax Speech Queue RAM (GORFOS Blocks 0099-0102)
+;
+; TOPTALK through BOTTOMTALK is an eight-entry circular array of 16-bit TALK PRIM pointers.
+; TOPTALK and BOTTOMTALK are queue-slot addresses; TALKIN and TALKOUT hold producer/consumer
+; pointers into that array.
+;******************************************************************************************
+ONHOLD          EQU     $D111                   ; Delay ticks before PHONE resumes service
+TOPTALK         EQU     $D112                   ; First TALK PRIM pointer slot
+BOTTOMTALK      EQU     $D120                   ; Final TALK PRIM pointer slot
+TALKHERE        EQU     $D122                   ; Next phoneme byte in active primitive
+PHONECOUNT      EQU     $D124                   ; Source PHONE#: phonemes remaining
+TALKIN          EQU     $D125                   ; Producer pointer: next queue slot to fill
+TALKOUT         EQU     $D127                   ; Consumer pointer: next queue slot to play
+MSYRND          EQU     $D129                   ; Mission-start anti-repeat selector
+HTYRND          EQU     $D12A                   ; Hit-taunt anti-repeat selector
+
+FOREIGN_SPEECH_ENTRY EQU $C000                  ; Foreign-language speech entry selected by SETTINGS bit 3
+
+;******************************************************************************************
+; Upper-ROM Program-2 Speech Keys
+;
+; These three count-prefixed SC-01 records form the Flag Ship completion announcement.
+; The recovered TERSE material does not provide source symbols for the records; these names
+; are the disassembly's semantic speech-key labels. They are also required translation keys
+; for the Program-2 X11 language interface.
+;******************************************************************************************
+SPK_FLAGSHIP_INTRO       EQU     $A985           ; "Next time will be harder, but for now"
+SPK_GORFIAN_CHRONICLES   EQU     $A9A8           ; "In the Gorfian chronicles"
+SPK_FLAGSHIP_HIT         EQU     $A9C1           ; "For hitting my flagship"
 
 ;******************************************************************************************
 ; TERSE System Stack Pointers
